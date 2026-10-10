@@ -16,7 +16,7 @@ make install
 cd build
 make clean_custom_pass
 
-6) 声明ops-nn开发的融合算子kernel路径：
+6) 声明算子kernel路径：
 export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH} 
 
 7) conv2d_silu.py软链接
