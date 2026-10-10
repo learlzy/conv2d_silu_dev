@@ -1,0 +1,58 @@
+[
+    {
+        "op": "Conv2dSilu",
+        "input_desc": [
+            {
+                "name": "x",
+                "param_type": "required",
+                "format": ["NC1HWC0", "NC1HWC0"],
+                "type": ["float16", "float32"]
+            },
+            {
+                "name": "filter",
+                "param_type": "required",
+                "format": ["FRACTAL_Z", "FRACTAL_Z"],
+                "type": ["float16", "float32"]
+            },
+            {
+                "name": "bias",
+                "param_type": "required",
+                "format": ["ND", "ND"],
+                "type": ["float16", "float32"]
+            }
+        ],
+        "output_desc": [
+            {
+                "name": "y",
+                "param_type": "required",
+                "format": ["NC1HWC0", "NC1HWC0"],
+                "type": ["float16", "float32"]
+            }
+        ],
+        "attr": [                                                                   
+            {
+                "name": "strides",
+                "param_type": "required",
+                "type": "list_int"
+            },
+            {
+                "name": "pads",
+                "param_type": "optional",
+                "type": "list_int",
+                "default_value": [0, 0, 0, 0]
+            },
+            {
+                "name": "dilations",
+                "param_type": "optional",
+                "type": "list_int",
+                "default_value": [1, 1, 1, 1]
+            },
+            {
+                "name": "groups",
+                "param_type": "optional",
+                "type": "int",
+                "default_value": 1
+            }
+        ]
+    }
+]

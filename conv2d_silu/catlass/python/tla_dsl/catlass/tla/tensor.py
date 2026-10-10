@@ -1,0 +1,1049 @@
+"""Tla tensor IR values and view helpers."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from catlass._mlir import ir as mlir_ir  # type: ignore[assignment]
+
+from .. import _tla_type_bridge
+from catlass._mlir.dialects import tla as _tla_ops_gen  # type: ignore[import-not-found]
+from ..base_dsl.op import dsl_user_op
+from .. import runtime as _runtime
+from ..base_dsl.typing import Bool, Numeric
+from ..params import LoadParams, StoreParams
+from .typing import Tensor as TensorABC
+
+if TYPE_CHECKING:
+    from ..core_api import MaskSSA, VectorSSA
+
+
+def _dynamic_metadata_values(type_tree: Any, metadata_tree: Any) -> list[Any]:
+    """Return runtime values corresponding to dynamic leaves in a type tree."""
+    if isinstance(type_tree, tuple):
+        values: list[Any] = []
+        for type_child, metadata_child in zip(type_tree, metadata_tree, strict=True):
+            values.extend(_dynamic_metadata_values(type_child, metadata_child))
+        return values
+    return [metadata_tree] if type_tree is None else []
+
+
+# MaskSSA load/store UB: any 1/2/4-byte scalar (int or float).
+# ``N = 256 / sizeof(UB elem)``; hardware path is still plds/psts.b8.
+_MASK_UB_ELEM_BYTES = frozenset((1, 2, 4))
+
+
+class _Tensor(TensorABC):
+    """Frontend proxy for an SSA ``!tla.tensor`` value."""
+
+    def __init__(self, value: mlir_ir.Value) -> None:
+        if not isinstance(value, mlir_ir.Value):
+            raise TypeError(
+                f"Tensor value expects mlir.ir.Value, got {type(value).__name__}"
+            )
+        if not _tla_type_bridge.type_is_tensor(value.type):
+            raise TypeError(f"Tensor value expects !tla.tensor<...>, got {value.type}")
+        self.value = value
+        self.__tla_category__ = "tensor"
+        _runtime._bind_frontend_value(self, value)
+        _runtime._bind_frontend_category(self, "tensor")
+        _runtime._bind_frontend_category(value, "tensor")
+
+    def __tla_type__(self) -> str:
+        return str(self.value.type)
+
+    def __get_mlir_types__(self, context: mlir_ir.Context | None = None) -> list[Any]:
+        del context
+        return [self.value.type]
+
+    def __extract_mlir_values__(self) -> list[Any]:
+        """Flatten this tensor and the SSA leaves of its dynamic metadata."""
+        from ..core_api import _tla_tensor_type_for_mlir_value
+
+        tensor_type = _tla_tensor_type_for_mlir_value(self.value)
+        values: list[Any] = [self.value]
+        for field, type_tree in (
+            ("shape", tensor_type.shape),
+            ("stride", tensor_type.stride),
+            ("coord", tensor_type.coord),
+            ("origin_shape", tensor_type.origin_shape),
+        ):
+            values.extend(
+                _dynamic_metadata_values(
+                    type_tree, _tensor_metadata_field(self.value, field)
+                )
+            )
+        return values
+
+    def __new_from_mlir_values__(self, values: list[Any]) -> "_Tensor":
+        """Rebuild an SCF-carried tensor and register its selected metadata."""
+        from ..core_api import (
+            _metadata_from_type_tree,
+            _register_tla_tensor_metadata,
+            _register_tla_tensor_type,
+            _tla_tensor_type_for_mlir_value,
+        )
+
+        expected_count = len(self.__extract_mlir_values__())
+        if len(values) != expected_count:
+            raise ValueError(
+                f"Tensor expects {expected_count} MLIR values, got {len(values)}"
+            )
+        result = _Tensor(values[0])
+        tensor_type = _tla_tensor_type_for_mlir_value(self.value)
+        _register_tla_tensor_type(result.value, tensor_type)
+
+        from ..base_dsl.typing import as_numeric
+
+        dynamic_values = iter(as_numeric(value) for value in values[1:])
+        metadata = {
+            "shape": _metadata_from_type_tree(tensor_type.shape, dynamic_values),
+            "stride": _metadata_from_type_tree(tensor_type.stride, dynamic_values),
+            "coord": _metadata_from_type_tree(tensor_type.coord, dynamic_values),
+            "origin_shape": _metadata_from_type_tree(
+                tensor_type.origin_shape, dynamic_values
+            ),
+            "dtype": tensor_type.element_type,
+            "addrspace": tensor_type.addrspace,
+            "layout_tag": tensor_type.layout_tag,
+        }
+        _register_tla_tensor_metadata(result.value, metadata)
+        return result
+
+    @property
+    def shape(self) -> Any:
+        return _tensor_metadata_field(self.value, "shape")
+
+    @property
+    def stride(self) -> Any:
+        return _tensor_metadata_field(self.value, "stride")
+
+    @property
+    def coord(self) -> Any:
+        return _tensor_metadata_field(self.value, "coord")
+
+    @property
+    def origin_shape(self) -> Any:
+        return _tensor_metadata_field(self.value, "origin_shape")
+
+    @property
+    def dtype(self) -> str:
+        return str(_tensor_metadata_field(self.value, "dtype"))
+
+    @property
+    def element_type(self) -> type[Numeric]:
+        from ..core_api import _tla_tensor_descriptor_from_type_or_value
+
+        parent = _tla_tensor_descriptor_from_type_or_value(self.value)
+        return Numeric.from_mlir_type(parent.element_mlir_type())
+
+    @property
+    def addrspace(self) -> str:
+        return str(_tensor_metadata_field(self.value, "addrspace"))
+
+    @property
+    def layout_tag(self) -> str:
+        return str(_tensor_metadata_field(self.value, "layout_tag"))
+
+    @property
+    def ptr(self) -> Any:
+        """Return the backing ``!tla.ptr`` of this tensor.
+
+        The result is a :class:`~catlass.core_api._Pointer` and supports element-count
+        offset arithmetic via ``+`` (e.g. ``a.ptr + 16`` advances by 16 elements), which
+        can be fed to :func:`tla.make_tensor` to construct a tensor at an offset address.
+        """
+        from ..base_dsl.op import _capture_user_loc
+        from ..core_api import _as_value, _emit_tensor_ptr
+
+        loc = (
+            _capture_user_loc()
+            if _runtime._current_frontend_state() is not None
+            else None
+        )
+        return _emit_tensor_ptr(_as_value(self), loc)
+
+    @staticmethod
+    def _prepare_scalar_indices(
+        crd: Any,
+        desc: Any,
+        *,
+        addrspace: str,
+        action: str,
+    ) -> list[mlir_ir.Value]:
+        """Validate and materialize indices used by GM or UB scalar access."""
+        from ..core_api import _as_index_value, _flatten_tla_tuple
+        from ..execution_lowering import TlaLoweringError
+
+        indices = crd if isinstance(crd, tuple) else (crd,)
+        shape = _flatten_tla_tuple(desc.shape)
+        if addrspace == "ub":
+            _runtime._require_enclosing_region(f"scalar_{action}", "vector")
+        if len(shape) not in (1, 2) or len(indices) != len(shape):
+            raise TlaLoweringError(
+                f"tla.scalar_{action} index rank must match tensor logical rank "
+                f"(shape rank {len(shape)}, index rank {len(indices)})"
+            )
+
+        if addrspace == "ub":
+            if any(isinstance(index, bool) for index in indices):
+                raise TlaLoweringError(
+                    "scalar tensor index must be an integer or index SSA"
+                )
+            origin_shape = _flatten_tla_tuple(desc.origin_shape)
+            if len(origin_shape) != len(shape):
+                raise TlaLoweringError(
+                    f"scalar tensor {action} origin rank must match tensor rank"
+                )
+            for index, dim in zip(indices, origin_shape):
+                if isinstance(index, int) and isinstance(dim, int):
+                    if dim <= 0 or index < 0 or index >= dim:
+                        raise TlaLoweringError(
+                            f"scalar tensor index {index} is out of bounds for length {dim}"
+                        )
+
+        try:
+            return [_as_index_value(index) for index in indices]
+        except TlaLoweringError as exc:
+            if addrspace == "ub":
+                raise TlaLoweringError(
+                    "scalar tensor index must be an integer or index SSA"
+                ) from exc
+            raise
+
+    @dsl_user_op
+    def load(
+        self,
+        params: LoadParams | None = None,
+        *,
+        loc: mlir_ir.Location | None = None,
+    ) -> MaskSSA | VectorSSA | tuple[VectorSSA, VectorSSA]:
+        """Directory: Data Movement
+        Description:
+            Load this UB tensor tile into vector or mask SSA (`tile.load`).
+
+            Parameters:
+            - `params` (`LoadParams | None`): Load mode. `None` / `NormalLoadParams` /
+              `UnalignLoadParams` → `VectorSSA` (or a pair for `DIST_DINTLV_B32`);
+              `MaskLoadParams` → `MaskSSA`. Optional, default `None`.
+
+            Constraints:
+            - Must be called inside a `@tla.kernel`-decorated kernel function.
+            - Must be called inside `tla.vec.func()`; source tile must be UB.
+            - Mask load requires a 1/2/4-byte scalar UB element type.
+
+            Example:
+            ```python
+            with tla.vec.func(mode="simd"):
+                x_reg = x_ub.load()
+                x_unalign = x_ub.load(tla.params.UnalignLoadParams())
+            ```
+        """
+        from ..core_api import (
+            MaskSSA,
+            VectorSSA,
+            _as_value,
+            _coerce_type,
+            _full_vector_ssa_descriptor,
+            _mask_ssa_type_for_element_type,
+            _op_error,
+            _require_frontend_state,
+            _tla_tensor_type_for_mlir_value,
+            _vector_ssa_type_from_tensor_descriptor,
+        )
+        from ..execution_lowering import TlaLoweringError
+        from ..params import (
+            BlockLoadParams,
+            LoadDist,
+            MaskLoadDist,
+            MaskLoadParams,
+            NormalLoadParams,
+            PostMode,
+            UnalignLoadParams,
+        )
+        from ..types import TlaMaskSSATypeDescriptor, dtype_size_bytes
+
+        loc = _normalize_user_loc(loc)
+        _require_frontend_state("load")
+        _runtime._require_enclosing_region("load", "vec.func")
+
+        source = _as_value(self)
+        source_desc = _tla_tensor_type_for_mlir_value(source)
+        if source_desc.addrspace.lower() != "ub":
+            _op_error(
+                "load",
+                "invalid argument 'source' (position 0): expected addrspace ub, "
+                f"got {source_desc.addrspace}",
+            )
+
+        # MaskSSA path: selected by MaskLoadParams.
+        if isinstance(params, MaskLoadParams):
+            if params.load_dist != MaskLoadDist.DIST_NORM:
+                raise NotImplementedError(
+                    f"currently unsupported load_dist {params.load_dist!r}"
+                )
+            elem = str(source_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) not in _MASK_UB_ELEM_BYTES:
+                _op_error(
+                    "load",
+                    f"invalid argument 'source': expected 1/2/4-byte scalar "
+                    f"element type for MaskSSA load, got "
+                    f"{source_desc.element_type}",
+                )
+            mask_desc = TlaMaskSSATypeDescriptor(
+                physical_lanes=_mask_ssa_type_for_element_type(elem).physical_lanes
+            )
+            mask_ty = mask_desc.to_mlir_type(
+                loc.context if loc is not None else mlir_ir.Context.current
+            )
+            return MaskSSA(_tla_ops_gen.load(mask_ty, None, source, loc=loc))
+
+        if params is None:
+            params = NormalLoadParams()
+        elif not isinstance(
+            params, (NormalLoadParams, UnalignLoadParams, BlockLoadParams)
+        ):
+            raise TlaLoweringError(
+                "load params must be NormalLoadParams, UnalignLoadParams, "
+                f"BlockLoadParams, or MaskLoadParams, got {type(params).__name__}"
+            )
+
+        if params.post_mode != PostMode.POST_MODE_NORMAL:
+            raise NotImplementedError(
+                f"currently unsupported post_mode {params.post_mode!r}"
+            )
+        # BlockLoadParams gives post_update_stride the POST_MODE_NORMAL
+        # compile-time pre-offset meaning (vsldb repeat_stride); for the other
+        # param types it stays unsupported.
+        if params.post_update_stride != 0 and not isinstance(params, BlockLoadParams):
+            raise NotImplementedError(
+                f"currently unsupported post_update_stride {params.post_update_stride}"
+            )
+        if isinstance(params, UnalignLoadParams) and params.is_pre:
+            raise NotImplementedError(f"currently unsupported is_pre {params.is_pre}")
+
+        is_dintlv = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_DINTLV_B32
+        )
+        is_us_b8 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_US_B8
+        )
+        is_brc_b16 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_BRC_B16
+        )
+        is_us_b16 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_US_B16
+        )
+        is_unpack_b16 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_UNPACK_B16
+        )
+        is_e2b_b16 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_E2B_B16
+        )
+        is_e2b_b32 = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_E2B_B32
+        )
+        is_blk = (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_BLK
+        )
+        is_block_load = isinstance(params, BlockLoadParams)
+        if is_block_load:
+            # vsldb packs each stride into a 16-bit immediate field: reject
+            # out-of-range values at compile time (Issue 519 acceptance).
+            for stride_name, stride_value in (
+                ("block_stride", params.block_stride),
+                ("post_update_stride", params.post_update_stride),
+            ):
+                if not 0 <= stride_value <= 0xFFFF:
+                    raise TlaLoweringError(
+                        f"BlockLoadParams.{stride_name} must be in [0, 65535] "
+                        "(16-bit vsldb immediate field), got "
+                        f"{stride_value}"
+                    )
+            # vsldb stubs cover 2/4-byte lanes (f32/f16/bf16/i32/u32/i16/u16);
+            # b8 has no VectorReg shim yet.
+            elem = str(source_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) not in (2, 4):
+                raise TlaLoweringError(
+                    "BlockLoadParams requires a 2/4-byte element type "
+                    "(f32/f16/bf16/i32/u32/i16/u16), got "
+                    f"{source_desc.element_type}"
+                )
+
+        load_kwargs: dict[str, Any] = {"loc": loc}
+        if isinstance(params, UnalignLoadParams):
+            load_kwargs["unaligned_ub_access"] = True
+        elif (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist != LoadDist.DIST_NORM
+        ):
+            ctx = loc.context if loc is not None else mlir_ir.Context.current
+            load_kwargs["load_dist"] = mlir_ir.Attribute.parse(
+                f"#tla.load_dist<{params.load_dist}>",
+                context=ctx,
+            )
+
+        if is_dintlv:
+            # AscendNPU-IR lowers DINTLV_B32 only to vldsx2.v64f32; reject
+            # i32/u32 (and other dtypes) at the frontend until IR dispatches.
+            elem = str(source_desc.element_type).strip().lower()
+            if elem != "f32":
+                raise TlaLoweringError(
+                    "DIST_DINTLV_B32 currently requires f32 element type "
+                    f"(got {source_desc.element_type})"
+                )
+            # Dual-destination load writes two full VL registers (even/odd).
+            # Source tile is typically 2*VL elements; do not derive result
+            # VectorSSA lanes from the source origin_shape.
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif (
+            isinstance(params, NormalLoadParams)
+            and params.load_dist == LoadDist.DIST_BRC_B32
+        ):
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_us_b8:
+            # AscendC LoadDist::DIST_US_B8: 2x up-sample of b8 elements. The
+            # transfer reads VL/2 b8 elements and repeats each twice to fill a
+            # VL-wide b8 register, so the result is a full VL vector (i8/u8 ->
+            # 256 lanes) regardless of the source origin_shape.
+            elem = str(source_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) != 1:
+                raise TlaLoweringError(
+                    "DIST_US_B8 requires a 1-byte (b8: i8/u8) element type "
+                    f"(got {source_desc.element_type})"
+                )
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_brc_b16 or is_us_b16:
+            # AscendC LoadDist::DIST_BRC_B16 / DIST_US_B16: b16-only modes.
+            # BRC_B16 reads one b16 element and replicates it across all lanes;
+            # US_B16 reads VL/2 b16 elements and repeats each twice. Either way
+            # the result is a full VL register (f16/bf16/i16/u16 -> 128 lanes)
+            # regardless of the source origin_shape.
+            elem = str(source_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) != 2:
+                mode = "DIST_BRC_B16" if is_brc_b16 else "DIST_US_B16"
+                raise TlaLoweringError(
+                    f"{mode} requires a 2-byte (b16: f16/bf16/i16/u16) "
+                    f"element type (got {source_desc.element_type})"
+                )
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_unpack_b16:
+            # AscendC LoadDist::DIST_UNPACK_B16 (HIVMAVE UNPK_B16): b16-only
+            # unpack. The transfer reads VL/2 b16 elements and inserts one
+            # zero b16 element after each to fill a VL-wide b16 register, so
+            # the result is a full VL vector regardless of the source
+            # origin_shape.
+            elem = str(source_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) != 2:
+                raise TlaLoweringError(
+                    "DIST_UNPACK_B16 requires a 2-byte (b16: f16/bf16/i16/u16) "
+                    f"element type (got {source_desc.element_type})"
+                )
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_e2b_b16 or is_e2b_b32:
+            # AscendC LoadDist::DIST_E2B_B16 / DIST_E2B_B32 (HIVMAVE E2B_B16 /
+            # E2B_B32): element-to-DataBlock broadcast. The transfer reads
+            # VL/DB = 8 source elements (DB = 32-byte DataBlock) and
+            # replicates each element across all lanes of its destination
+            # DataBlock, so the result is a full VL register (b16 -> 128
+            # lanes / b32 -> 64 lanes) regardless of the source origin_shape.
+            elem = str(source_desc.element_type).strip().lower()
+            mode = "DIST_E2B_B16" if is_e2b_b16 else "DIST_E2B_B32"
+            want_bytes = 2 if is_e2b_b16 else 4
+            if dtype_size_bytes(elem) != want_bytes:
+                raise TlaLoweringError(
+                    f"{mode} requires a {want_bytes}-byte element type "
+                    "(b16: f16/bf16/i16/u16; b32: f32/i32/u32; "
+                    f"got {source_desc.element_type})"
+                )
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_blk:
+            # AscendC LoadDist::DIST_BLK (HIVMAVE BLK): DataBlock broadcast.
+            # The transfer reads one 32-byte DataBlock worth of elements
+            # (b8: 32, b16: 16, b32: 8) from the tile view base and
+            # replicates it across all VL/DB (= 8) DataBlocks to fill a
+            # VL-wide register. Unlike the suffixed modes, ``blk`` works for
+            # any element size, so there is no dtype check here; the result
+            # is a full VL vector regardless of the source origin_shape.
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        elif is_block_load:
+            # AscendC vsldb strided block load: one instruction gathers 8
+            # DataBlocks (256B) into a full VL register regardless of the
+            # source origin_shape; the tile view only supplies the address.
+            result_desc = _full_vector_ssa_descriptor(source_desc.element_type)
+        else:
+            result_desc = _vector_ssa_type_from_tensor_descriptor(source_desc)
+
+        result_type = _coerce_type(result_desc)
+        if is_dintlv:
+            results = _tla_ops_gen.load(result_type, result_type, source, **load_kwargs)
+            return tuple(VectorSSA(result) for result in results)
+
+        block_stride_attr = params.block_stride if is_block_load else None
+        repeat_stride_attr = (
+            params.post_update_stride
+            if is_block_load and params.post_update_stride != 0
+            else None
+        )
+        result = _tla_ops_gen.load(
+            result_type,
+            None,
+            source,
+            block_stride=block_stride_attr,
+            repeat_stride=repeat_stride_attr,
+            **load_kwargs,
+        )
+        return VectorSSA(result)
+
+    @dsl_user_op
+    def store(
+        self,
+        value: VectorSSA | MaskSSA,
+        params: StoreParams | None = None,
+        *,
+        mask: MaskSSA | None = None,
+        loc: mlir_ir.Location | None = None,
+    ) -> None:
+        """Directory: Data Movement
+        Description:
+            Store vector or mask SSA into this UB tensor tile (`tile.store`).
+
+            Parameters:
+            - `value` (`VectorSSA | MaskSSA`): `VectorSSA` or `MaskSSA` to store. Required.
+            - `params` (`StoreParams | None`): Store mode. `None` / `NormalStoreParams` /
+              `UnalignStoreParams` / `BlockStoreParams` → vector store;
+              `MaskStoreParams` → mask store. Optional, default `None`.
+            - `mask` (`MaskSSA | None`): Optional predicate for vector stores; not
+              allowed with `MaskStoreParams`. Optional, default `None`.
+
+            Constraints:
+            - Must be called inside a `@tla.kernel`-decorated kernel function.
+            - Must be called inside `tla.vec.func()`; destination tile must be UB.
+
+            Example:
+            ```python
+            with tla.vec.func(mode="simd"):
+                y_ub.store(y_reg)
+                y_ub.store(y_reg, tla.params.UnalignStoreParams())
+            ```
+        """
+        from ..core_api import (
+            _as_value,
+            _mask_ssa_type_for_element_type,
+            _mask_ssa_type_for_mlir_value,
+            _op_error,
+            _require_category,
+            _require_frontend_state,
+            _require_mask_matches_vector,
+            _tla_tensor_type_for_mlir_value,
+            _vector_ssa_type_for_mlir_value,
+        )
+        from ..execution_lowering import TlaLoweringError
+        from ..params import (
+            BlockStoreParams,
+            StoreDist,
+            MaskStoreDist,
+            MaskStoreParams,
+            NormalStoreParams,
+            UnalignStoreParams,
+        )
+        from ..types import dtype_size_bytes
+
+        loc = _normalize_user_loc(loc)
+        _require_frontend_state("store")
+        _runtime._require_enclosing_region("store", "vec.func")
+
+        dest = _as_value(self)
+        dest_desc = _tla_tensor_type_for_mlir_value(dest)
+        if dest_desc.addrspace.lower() != "ub":
+            _op_error(
+                "store",
+                "invalid argument 'dest' (position 0): expected addrspace ub, "
+                f"got {dest_desc.addrspace}",
+            )
+        value_val = _as_value(value)
+
+        # MaskSSA path: selected by MaskStoreParams.
+        if isinstance(params, MaskStoreParams):
+            if mask is not None:
+                raise TlaLoweringError(
+                    "store(..., MaskStoreParams) does not accept predicate mask="
+                )
+            if params.store_dist != MaskStoreDist.DIST_NORM:
+                # TODO: Once all `StoreDist` mode supported, remove this guard.
+                raise NotImplementedError(
+                    f"currently unsupported store_dist {params.store_dist!r}"
+                )
+            _require_category("store", "value", value, "mask_ssa", 1)
+            elem = str(dest_desc.element_type).strip().lower()
+            if dtype_size_bytes(elem) not in _MASK_UB_ELEM_BYTES:
+                _op_error(
+                    "store",
+                    f"invalid argument 'dest': expected 1/2/4-byte scalar "
+                    f"element type for MaskSSA store, got "
+                    f"{dest_desc.element_type}",
+                )
+            mask_desc = _mask_ssa_type_for_mlir_value(value_val)
+            ub_lanes = _mask_ssa_type_for_element_type(elem).physical_lanes
+            if mask_desc.physical_lanes != ub_lanes:
+                _op_error(
+                    "store",
+                    f"MaskSSA has {mask_desc.physical_lanes} lanes, but dest "
+                    f"element type {dest_desc.element_type} implies "
+                    f"!tla.mask<{ub_lanes}> (256/sizeof); use matching "
+                    "UB width (e.g. f32 UB with f32 / mask<64>)",
+                )
+            _tla_ops_gen.store(dest, value_val, loc=loc)
+            return
+
+        if _tla_type_bridge.type_is_mask_ssa(value_val.type):
+            raise TlaLoweringError(
+                "storing MaskSSA requires MaskStoreParams "
+                "(got "
+                f"{type(params).__name__ if params is not None else 'None'})"
+            )
+
+        _require_category("store", "value", value, "vector_ssa", 1)
+        if mask is not None:
+            _require_category("store", "mask", mask, "mask_ssa", 2)
+        if params is None:
+            params = NormalStoreParams()
+        elif not isinstance(
+            params, (NormalStoreParams, UnalignStoreParams, BlockStoreParams)
+        ):
+            raise TlaLoweringError(
+                "store params must be NormalStoreParams, UnalignStoreParams, or "
+                f"MaskStoreParams, got {type(params).__name__}"
+            )
+        mask_val = _as_value(mask) if mask is not None else None
+        if mask_val is not None:
+            _require_mask_matches_vector("store", mask_val, value_val)
+        if isinstance(params, NormalStoreParams) and params.store_dist in (
+            StoreDist.DIST_FIRST_ELEMENT_B8,
+            StoreDist.DIST_FIRST_ELEMENT_B16,
+            StoreDist.DIST_FIRST_ELEMENT_B32,
+        ):
+            # AscendC DIST_FIRST_ELEMENT_* (HIVMAVE ONEPT_B*): mask-ignoring
+            # element store that writes only lane 0 of the source register to
+            # the dst base (asc_storealign_1st). The _b8/_b16/_b32 suffix fixes
+            # the stored element width in bytes; a mismatch would silently
+            # truncate/widen the stored bytes, so require it on both sides.
+            suffix = str(params.store_dist).rsplit("_", 1)[1]
+            suffix_bytes = int(suffix[1:]) // 8
+            mode = "DIST_FIRST_ELEMENT_" + suffix[1:].upper()
+            src_elem = (
+                str(_vector_ssa_type_for_mlir_value(value_val).element_type)
+                .strip()
+                .lower()
+            )
+            dst_elem = str(dest_desc.element_type).strip().lower()
+            if (
+                dtype_size_bytes(src_elem) != suffix_bytes
+                or dtype_size_bytes(dst_elem) != suffix_bytes
+            ):
+                raise TlaLoweringError(
+                    f"{mode} requires {suffix_bytes}-byte element types on both "
+                    f"the stored value (got {src_elem}, "
+                    f"{dtype_size_bytes(src_elem)} bytes) and the dest tile "
+                    f"(got {dst_elem}, {dtype_size_bytes(dst_elem)} bytes)"
+                )
+        store_kwargs: dict[str, Any] = {"loc": loc}
+        if (
+            isinstance(params, NormalStoreParams)
+            and params.store_dist != StoreDist.DIST_NORM
+        ):
+            ctx = loc.context if loc is not None else mlir_ir.Context.current
+            store_kwargs["store_dist"] = mlir_ir.Attribute.parse(
+                f"#tla.store_dist<{params.store_dist}>",
+                context=ctx,
+            )
+        if isinstance(params, UnalignStoreParams):
+            store_kwargs["unaligned_ub_access"] = True
+        if isinstance(params, BlockStoreParams):
+            block_stride_value = _as_value(params.block_stride)
+        else:
+            block_stride_value = None
+        _tla_ops_gen.store(
+            dest,
+            value_val,
+            mask=mask_val,
+            block_stride=block_stride_value,
+            **store_kwargs,
+        )
+
+    @dsl_user_op
+    def fill(
+        self,
+        value: int | float,
+        *,
+        loc: mlir_ir.Location | None = None,
+    ) -> None:
+        """Directory: Data fill
+        Description:
+            Fill this whole L1 zN/nZ tile with a value. The
+            fill region is the tile itself: ``[self.coord, self.coord +
+            self.origin_shape)`` over the tile's logical 2-D (M, N) axes.
+            Along the layout's C0 axis (32 bytes) the start coordinate is
+            aligned up to the C0 boundary before filling, so only whole
+            C0 units inside the tile are written and partial elements at
+            the start are left untouched (cover the residue another way
+            -- in the MX pad flow the GM->L1 copy brings it).
+
+            For a concrete fp8 (one C0 unit = 32 bytes) zN example, take
+            a tile (e.g. from `tla.get_tile`) at coord ``(0, 40)`` with
+            ``origin_shape = (16, 56)``:
+
+            ```text
+                N   0               32  40          64              96
+                                                    ^   C0 boundary: start 40 aligns up to 64
+                M
+                0   - - - - - - - - - - + + + + + + * * * * * * * *
+                1   - - - - - - - - - - + + + + + + * * * * * * * *
+                :   (rows 2 .. 14 identical)
+               15   - - - - - - - - - - + + + + + + * * * * * * * *
+            ```
+
+            Legend: `*` = written by the device: the whole C0 units
+            ``[64, 96)`` (the tile end 40 + 56 = 96 is already C0-aligned).
+            `+` = inside the tile but not written: cols 40..63 are a
+            partial C0 unit. `-` = outside the tile. The M axis has no
+            C0 alignment here: for zN the C0 axis is N.
+
+            Parameters:
+            - `value` (`int | float`): Trace-time scalar; only ``0`` is
+              supported (the device writes the zero bit pattern).
+
+            Constraints:
+            - Must be called inside a `@tla.kernel`-decorated kernel function and
+              nested inside `tla.cube()`.
+            - Destination must be an L1 tensor tagged ``zN`` or ``nZ``.
+            - Supported element types: the packed fp4/fp8 operand formats
+              (``f4e2m1``/``f4e1m2``/``f8e4m3fn``/``f8e5m2``), zero only.
+              Wider types, 8-bit integers and e8m0 scale tiles are not
+              supported.
+
+            Example:
+            ```python
+            # Zero the K-pad tail of an L1 A tile: tile first, then fill.
+            pad = tla.get_tile(t_l1a, tla.make_coord(0, k_valid),
+                               tla.make_shape(m, k_l0 - k_valid))
+            pad.fill(0)
+            ```
+        """
+        from ..core_api import _tensor_fill_impl
+
+        loc = _normalize_user_loc(loc)
+        _tensor_fill_impl(self, value, loc=loc)
+
+    def _check_can_scalar_load_store(self) -> None:
+        """Phase-1 GM/UB scalar access preconditions."""
+        if self.addrspace not in ("gm", "ub"):
+            raise ValueError(f"{self!r} doesn't support scalar_load/store")
+        if self.layout_tag not in ("RowMajor", "ColumnMajor"):
+            raise ValueError(
+                f"{self!r} doesn't support scalar_load/store (layout={self.layout_tag!r})"
+            )
+
+    def _check_can_dereference(self) -> None:
+        sub_byte_types = (Bool,)
+        if self.element_type.width % 8 != 0 and self.element_type not in sub_byte_types:
+            raise ValueError(
+                f"Sub-byte scalar dereference not supported for type {self.element_type.__name__}"
+            )
+
+    def _cvt_to_dest(
+        self,
+        data: Numeric,
+        dest_element_type: mlir_ir.Type,
+        *,
+        loc: mlir_ir.Location | None = None,
+    ) -> mlir_ir.Value:
+        """Require exact element type match, then ``ir_value`` / host constant."""
+        from ..core_api import _op_error, _scalar_constant_for_element_type
+
+        if not isinstance(data, Numeric):
+            raise TypeError(f"expected Numeric, got {type(data).__name__}")
+
+        dest_cls = Numeric.from_mlir_type(dest_element_type)
+        src_cls = type(data)
+
+        # No silent upcast/promote: store value dtype must match the tensor element
+        # type. Callers should convert explicitly with ``.to(...)`` / ``cast``.
+        if src_cls is not dest_cls:
+            _op_error(
+                "scalar_store",
+                f"type mismatch, store {src_cls.dtype} "
+                f"to Tensor with element type {dest_cls.dtype}; "
+                f"cast explicitly with .to({dest_cls.__name__}) before store",
+            )
+
+        # Host literals: emit dest-typed constant (range / fraction checks).
+        if isinstance(data.value, (bool, int, float)):
+            return _scalar_constant_for_element_type(
+                "scalar_store", data.value, dest_element_type, loc=loc
+            )
+        return data.ir_value(loc=loc)
+
+    @dsl_user_op
+    def __getitem__(
+        self,
+        crd: Any,
+        *,
+        loc: mlir_ir.Location | None = None,
+    ) -> Any:
+        """Load one scalar tensor element, dispatching by address space."""
+        from ..core_api import (
+            _as_value,
+            _op_error,
+            _require_category,
+            _require_frontend_state,
+            _tla_tensor_descriptor_from_type_or_value,
+        )
+        from ..execution_lowering import TlaLoweringError
+
+        loc = _normalize_user_loc(loc)
+        if crd is None or (type(crd) is tuple and any(part is None for part in crd)):
+            raise TlaLoweringError(
+                "tensor indexing does not support None/underscore coordinates; "
+                "use scalar indices only"
+            )
+
+        _require_category("scalar_load", "source", self, "tensor", 0)
+        _require_frontend_state("scalar_load")
+        if type(crd) is tuple and not crd:
+            _op_error("scalar_load", "expected at least one index")
+
+        source_value = _as_value(self)
+        parent = _tla_tensor_descriptor_from_type_or_value(source_value)
+        addrspace = parent.addrspace.lower()
+        if isinstance(self, _Tensor):
+            self._check_can_scalar_load_store()
+            self._check_can_dereference()
+        else:
+            if addrspace not in ("gm", "ub"):
+                raise ValueError("tensor doesn't support scalar_load")
+            elem_numeric = Numeric.from_mlir_type(parent.element_mlir_type())
+            sub_byte_types = (Bool,)
+            if elem_numeric.width % 8 != 0 and elem_numeric not in sub_byte_types:
+                raise ValueError(
+                    "Sub-byte scalar dereference not supported for type "
+                    f"{elem_numeric.__name__}"
+                )
+        if parent.layout_tag not in ("RowMajor", "ColumnMajor"):
+            raise TlaLoweringError(
+                "tla.scalar_load currently supports RowMajor/ColumnMajor only"
+            )
+
+        index_values = _Tensor._prepare_scalar_indices(
+            crd, parent, addrspace=addrspace, action="load"
+        )
+
+        elem_type = parent.element_mlir_type()
+        # Per-thread element access inside a SIMT region is its own op: it is
+        # lowered against the outlined vector function's memref parameter rather
+        # than through the general descriptor view.
+        emit_load = (
+            _tla_ops_gen.simt_load
+            if _runtime._in_simt_vec_func()
+            else _tla_ops_gen.scalar_load
+        )
+        result = emit_load(
+            elem_type,
+            source_value,
+            index_values,
+            loc=loc,
+        )
+        if str(result.type) != str(elem_type):
+            raise TlaLoweringError(
+                f"tla scalar element load result type mismatch: expected {elem_type}, "
+                f"got {result.type}"
+            )
+        # Bool / i1 loads: Bool Numeric (``if tensor[i]`` via coerce).
+        if mlir_ir.IntegerType.isinstance(elem_type):
+            int_ty = mlir_ir.IntegerType(elem_type)
+            if int_ty.width == 1:
+                return Bool(result)
+        return Numeric.from_mlir_type(elem_type)(result)
+
+    @dsl_user_op
+    def __setitem__(
+        self,
+        crd: Any,
+        data: Any,
+        *,
+        loc: mlir_ir.Location | None = None,
+    ) -> None:
+        """Set tensor elements at scalar coordinates.
+
+        ``data`` may be a ``Numeric`` (e.g. from ``tensor[j]``), a bare Python
+        ``int``/``float`` literal (converted to the tensor element type), or an
+        ``mlir.ir.Value`` that ``as_numeric`` can wrap (``__setitem__``).
+        """
+        from ..base_dsl.typing import as_numeric
+        from ..core_api import (
+            _as_value,
+            _op_error,
+            _require_category,
+            _require_frontend_state,
+            _resolve_bound_value,
+            _scalar_constant_for_element_type,
+            _tla_tensor_descriptor_from_type_or_value,
+            _type_name,
+        )
+        from ..execution_lowering import TlaLoweringError
+
+        loc = _normalize_user_loc(loc)
+        if crd is None or (type(crd) is tuple and any(part is None for part in crd)):
+            raise TlaLoweringError(
+                "tensor indexing does not support None/underscore coordinates; "
+                "use scalar indices only"
+            )
+
+        _require_category("scalar_store", "dest", self, "tensor", 0)
+        _require_frontend_state("scalar_store")
+        if type(crd) is tuple and not crd:
+            _op_error("scalar_store", "expected at least one index")
+
+        dest_value = _as_value(self)
+        parent = _tla_tensor_descriptor_from_type_or_value(dest_value)
+        addrspace = parent.addrspace.lower()
+        if isinstance(self, _Tensor):
+            self._check_can_scalar_load_store()
+            self._check_can_dereference()
+        else:
+            if addrspace not in ("gm", "ub"):
+                raise ValueError("tensor doesn't support scalar_store")
+            elem_numeric = Numeric.from_mlir_type(parent.element_mlir_type())
+            sub_byte_types = (Bool,)
+            if elem_numeric.width % 8 != 0 and elem_numeric not in sub_byte_types:
+                raise ValueError(
+                    "Sub-byte scalar dereference not supported for type "
+                    f"{elem_numeric.__name__}"
+                )
+        if parent.layout_tag not in ("RowMajor", "ColumnMajor"):
+            raise TlaLoweringError(
+                "tla.scalar_store currently supports RowMajor/ColumnMajor only"
+            )
+
+        index_values = _Tensor._prepare_scalar_indices(
+            crd, parent, addrspace=addrspace, action="store"
+        )
+
+        elem_type = parent.element_mlir_type()
+        # Canonicalize to Numeric, then _cvt_to_dest → ir_value.
+        # Bare Python numbers stay dest-typed constants (range / fraction checks).
+        resolved = _resolve_bound_value(data)
+        if isinstance(resolved, (int, float)) and not isinstance(resolved, bool):
+            store_value = _scalar_constant_for_element_type(
+                "scalar_store", resolved, elem_type, loc=loc
+            )
+        else:
+            try:
+                if isinstance(resolved, Numeric):
+                    num = resolved
+                elif isinstance(resolved, mlir_ir.Value):
+                    num = as_numeric(resolved)
+                elif isinstance(data, Numeric):
+                    num = data
+                elif isinstance(data, mlir_ir.Value):
+                    num = as_numeric(data)
+                else:
+                    raise TypeError(type(data).__name__)
+            except (TypeError, ValueError, KeyError):
+                _op_error(
+                    "scalar_store",
+                    f"invalid argument 'value' (position 1): expected Numeric or "
+                    f"scalar literal, got {_type_name(data)}",
+                )
+            store_value = _Tensor._cvt_to_dest(self, num, elem_type, loc=loc)
+        if str(store_value.type) != str(elem_type):
+            raise TlaLoweringError(
+                f"tla.scalar_store value type mismatch: expected {elem_type}, got {store_value.type}"
+            )
+        emit_store = (
+            _tla_ops_gen.simt_store
+            if _runtime._in_simt_vec_func()
+            else _tla_ops_gen.scalar_store
+        )
+        emit_store(dest_value, index_values, store_value, loc=loc)
+
+
+def _normalize_user_loc(loc: mlir_ir.Location | None) -> mlir_ir.Location | None:
+    if loc is None and _runtime._current_frontend_state() is not None:
+        from ..core_api import _capture_user_loc
+
+        return _capture_user_loc()
+    if loc is not None and not isinstance(loc, mlir_ir.Location):
+        raise TypeError(
+            f"loc must be mlir.ir.Location or None, got {type(loc).__name__}"
+        )
+    return loc
+
+
+def _tensor_metadata_field(value: mlir_ir.Value, field: str) -> Any:
+    from ..core_api import _tensor_metadata_field as _lookup
+
+    return _lookup(value, field)
+
+
+def _scale_coord_leaf(coord: Any, shape: Any) -> Any:
+    if isinstance(coord, int):
+        return coord * shape
+    from ..base_dsl.typing import as_numeric
+
+    resolved = _runtime._resolve_frontend_bound_value(coord)
+    if (
+        resolved is not coord
+        or _runtime._resolve_frontend_bound_category(coord) == "index"
+    ):
+        return as_numeric(coord) * shape
+    return coord * shape
+
+
+def scale_tile_coord_by_shape(coord_tree: Any, shape_tree: Any) -> Any:
+    """Convert tile coordinates into element offsets using the tile shape."""
+
+    if isinstance(coord_tree, tuple) and isinstance(shape_tree, tuple):
+        if len(coord_tree) != len(shape_tree):
+            raise ValueError(
+                "tile-view coord/shape trees must have matching tuple profiles"
+            )
+        return tuple(
+            scale_tile_coord_by_shape(coord_part, shape_part)
+            for coord_part, shape_part in zip(coord_tree, shape_tree)
+        )
+    if isinstance(coord_tree, tuple) or isinstance(shape_tree, tuple):
+        raise ValueError(
+            "tile-view coord/shape trees must have matching tuple profiles"
+        )
+    return _scale_coord_leaf(coord_tree, shape_tree)
+
+
+def normalize_tile_view_coord(
+    *,
+    shape_components: tuple[Any, ...],
+    coord_components: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    """Convert ``tla.tile_view`` tile coordinates into element offsets."""
+
+    if len(coord_components) != len(shape_components):
+        raise ValueError("tile-view coord/shape ranks must match")
+    return tuple(
+        scale_tile_coord_by_shape(coord_part, shape_part)
+        for coord_part, shape_part in zip(coord_components, shape_components)
+    )
+
+
+__all__ = [
+    "_Tensor",
+    "normalize_tile_view_coord",
+    "scale_tile_coord_by_shape",
+]

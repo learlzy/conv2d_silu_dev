@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Generate TLA DSL Host API reference docs from Host sources (AST only).
+
+API docstrings carry ``Directory:`` plus Description / Parameters / Constraints /
+Example. Environment variables are documented separately in
+``docs/zh/kernel_development/core_concepts/env_vars.md`` (not scanned here).
+Writes English Markdown to ``docs/en/api/host_api_reference.md``.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from common import (
+    APIEntry,
+    PACKAGE_ROOT,
+    ParamInfo,
+    directory_path,
+    function_entry,
+    render_reference,
+    run_cli,
+)
+
+
+OUTPUT_PATH = PACKAGE_ROOT / "docs" / "en" / "api" / "host_api_reference.md"
+GENERATED_BY = "python/tla_dsl/tools/generate_host_api_reference.py"
+DEFAULT_SOURCE_PATH = PACKAGE_ROOT / "catlass" / "dsl.py"
+
+# Host decorator docs cover ``@tla.kernel``, ``@tla.jit``, and ``@tla.extern``.
+HOST_DIRECTORY_SECTIONS: list[tuple[str, str]] = [
+    (
+        "Decorators",
+        "Host-side `@tla.kernel` entry, `@tla.jit` device helpers, "
+        "`@tla.extern` declarations, and Host `@dataclass` packing. Decorated "
+        "kernel, helper, and extern declaration bodies are not executed on the Host.",
+    ),
+    (
+        "Compile and Launch",
+        "Compile a decorated kernel and launch it on the NPU. Use "
+        "`tla.compile` to obtain a callable `JitCompiledFunction`; call it "
+        "directly to lazily create and then reuse its executor. Cache / arch / IR-dump "
+        "knobs that are not function arguments are in "
+        "`docs/zh/kernel_development/core_concepts/env_vars.md`.",
+    ),
+    (
+        "Compile and Launch / Compile",
+        "Build a device binary. Primary entry: `tla.compile`. "
+        "`TlaJitFunction.compile` is a lower-level helper on the decorated "
+        "function.\n\n"
+        "`options` is one string, split on whitespace. A key option takes a "
+        "value; a switch takes none and is on once written.\n\n"
+        "| Option | Form | Meaning |\n"
+        "| --- | --- | --- |\n"
+        "| `--npu-arch <chip>` | key | Target chip, e.g. `3510`. |\n"
+        "| `--cce-disable-asc-reserved-ubuf` | switch | Release the 2 KB of "
+        "Unified Buffer the compiler holds back for Ascend C. |\n"
+        "| `--cce-disable-vf-stack-reserved-ubuf` | switch | Release the 6 KB "
+        "of Unified Buffer the compiler holds back for the VF stack. |\n\n"
+        "The Unified Buffer is 256 KB, of which the compiler reserves 8 KB "
+        "(2 KB Ascend C, 6 KB VF stack), leaving a kernel 248 KB. The two "
+        "switches release those reserves, and both are spelled as bisheng "
+        "spells them.\n\n"
+        "`tla.arch.get_capacity_in_bytes(tla.AddressSpace.ub)` reports the "
+        "whole 256 KB, not what is left after the reserve. A kernel that "
+        "divides that figure into buffers without also passing the two "
+        "switches asks for more than it is given, and is refused at launch.\n\n"
+        "**`--cce-disable-vf-stack-reserved-ubuf` carries a risk.** The VF "
+        "stack is where the compiler spills vector registers. Once it is "
+        "released, a kernel that provokes a spill leaves the compiler nowhere "
+        "to write, and nothing checks -- the result is a silent write over "
+        "whatever sits next to it in the Unified Buffer. Use it only for a "
+        "kernel you know does not spill.",
+    ),
+    (
+        "Compile and Launch / Launch",
+        "Run a compiled kernel on the NPU by calling the `JitCompiledFunction` "
+        "returned by `tla.compile`.",
+    ),
+    (
+        "Compile and Launch / Inspect",
+        "Dump frontend TLA IR without building a device binary or launching. "
+        "See `TlaJitFunction.dump_mlir`.",
+    ),
+    (
+        "Host Tensor",
+        "Build Host `tla.Tensor` objects and mark layout extents dynamic so one "
+        "artifact can run at different shapes. See also "
+        "`docs/zh/kernel_development/core_concepts/layout.md`.",
+    ),
+    (
+        "Host Tensor / Binding",
+        "Bind a real NPU buffer with `from_dlpack`, or a metadata-only sample "
+        "with `make_fake_tensor`.",
+    ),
+    (
+        "Host Tensor / Dynamic Layout",
+        "Mark static layout extents dynamic. See also "
+        "`docs/zh/kernel_development/core_concepts/layout.md`.",
+    ),
+]
+DIRECTORY_ORDER = [path for path, _ in HOST_DIRECTORY_SECTIONS]
+DIRECTORY_INTROS = dict(HOST_DIRECTORY_SECTIONS)
+
+HOST_SOURCE_PATHS = (
+    PACKAGE_ROOT / "catlass" / "dsl.py",
+    PACKAGE_ROOT / "catlass" / "catlass_dsl" / "catlass.py",
+    PACKAGE_ROOT / "catlass" / "base_dsl" / "compiler.py",
+    PACKAGE_ROOT / "catlass" / "base_dsl" / "jit_executor.py",
+    PACKAGE_ROOT / "catlass" / "execution_lowering.py",
+    PACKAGE_ROOT / "catlass" / "tla" / "ffi.py",
+    PACKAGE_ROOT / "catlass" / "tla" / "runtime.py",
+)
+
+# Display names in the generated reference (source qualified names stay unchanged).
+HOST_DISPLAY_NAMES = {
+    "CompileCallable.__call__": "compile",
+    "JitCompiledFunction.__call__": "JitCompiledFunction.__call__",
+    "_Tensor.mark_layout_dynamic": "Tensor.mark_layout_dynamic",
+    "_Tensor.mark_compact_shape_dynamic": "Tensor.mark_compact_shape_dynamic",
+    # Stdlib ``@dataclass`` packing rules live on the struct-arg validator.
+    "_validate_dataclass_kernel_arg": "dataclass",
+    # Public ``tla.kernel`` / ``tla.jit`` are aliases of these classmethods.
+    "CatlassBaseDSL.kernel": "kernel",
+    "CatlassBaseDSL.jit": "jit",
+}
+
+# Signature / qualified-name overrides when the documented public face differs
+# from the source helper (e.g. stdlib ``@dataclass``).
+HOST_ENTRY_OVERRIDES: dict[str, dict[str, object]] = {
+    "extern": {
+        "params": [
+            ParamInfo("source", "str", "keyword_only", None),
+            ParamInfo("name", "str | None", "keyword_only", "None"),
+            ParamInfo(
+                "include_dirs",
+                "str | os.PathLike[str] | Sequence[str | os.PathLike[str]]",
+                "keyword_only",
+                "()",
+            ),
+        ],
+    },
+    "_validate_dataclass_kernel_arg": {
+        "qualified_name": "dataclasses.dataclass",
+        "is_class": False,
+        "params": [
+            ParamInfo("cls", "type", "positional", None),
+            ParamInfo("frozen", "bool", "keyword_only", "False"),
+            ParamInfo("kw_only", "bool", "keyword_only", "False"),
+        ],
+        "returns": "type",
+    },
+    "CatlassBaseDSL.kernel": {
+        "qualified_name": "catlass.dsl.kernel",
+        "params": [
+            ParamInfo("fn", "Callable[..., Any] | None", "positional", "None"),
+            ParamInfo("auto_sync", "str | None", "keyword_only", "None"),
+        ],
+        "returns": ("TlaJitFunction | Callable[[Callable[..., Any]], TlaJitFunction]"),
+    },
+    "CatlassBaseDSL.jit": {
+        "qualified_name": "catlass.dsl.jit",
+        "params": [
+            ParamInfo("fn", "Callable[..., Any] | None", "positional", "None"),
+        ],
+        "returns": "Callable[..., Any]",
+    },
+}
+
+# Injected language-boundary topic (not scraped from a runtime symbol).
+CONSTEXPR_CALLABLE_DOC = """\
+Directory: Decorators
+Description:
+    Covers the "Compile-time function" row in the [`kernel`](#kernel) parameter table
+    (`tla.Constexpr[Callable[...]]`, or `tla.Constexpr` when the value is callable).
+    It does not cover compile-time constants.
+
+    Passing forms: outer `def`, `lambda`, `functools.partial`, or an `@tla.jit`-decorated
+    function. Pass at `tla.compile`; omit from `compiled(...)`. Different callables
+    specialize differently.
+
+Parameters:
+    None. Language-boundary notes for Constexpr Callable kernel arguments; not a
+    callable Host API.
+
+Constraints:
+    Body semantics (plain `def` / `lambda` / `partial`):
+
+    - Runs only during `tla.compile` / `dump_mlir`; DSL ops enter the current kernel's device
+      IR. The body is not run again when launching `compiled(...)`.
+    - When called from a kernel, the body may use only interfaces from the
+      [Kernel API](kernel_api_reference.md); see each entry's Constraints.
+    - Arbitrary Host-side Python is not device computation, including but not limited to
+      third-party libraries, file/network I/O, reliance on local Host state, and treating DSL
+      values as Host tensors or containers.
+    - TLA control flow is not supported: `tla.range`, dynamic `if` / `while`, and similar.
+
+    Body rules when the argument is `@tla.jit` are under [`jit`](#jit).
+
+    **Calls inside a kernel**
+
+    - Outer plain `def`: same body semantics as above.
+    - `@tla.jit` helper: see [`jit`](#jit); inlined into the current kernel IR during lowering.
+    - Constexpr Callable argument: same as this section.
+
+Example:
+    ```python
+    def abs_epilogue(value):
+        return tla.abs(value)
+
+    @tla.kernel
+    def transform(src: tla.Tensor, dst: tla.Tensor, epilogue: tla.Constexpr) -> None:
+        tile = tla.tile_view(src, tla.make_shape(64), tla.make_coord(0))
+        with tla.vector():
+            with tla.vec.func(mode="simd"):
+                dst_tile = tla.tile_view(dst, tla.make_shape(64), tla.make_coord(0))
+                dst_tile.store(epilogue(tile.load()))
+
+    compiled_ep = tla.compile(transform, tx, ty, abs_epilogue, options="--npu-arch 3510")
+    compiled_ep(tx, ty, block_num=1)  # abs_epilogue omitted at launch
+    ```
+"""
+
+
+def _should_collect(name: str) -> bool:
+    """Public symbols, or private helpers remapped into the Host reference."""
+    return (not name.startswith("_")) or name in HOST_DISPLAY_NAMES
+
+
+def _apply_overrides(source_name: str, entry: APIEntry) -> APIEntry:
+    meta = HOST_ENTRY_OVERRIDES.get(source_name)
+    if not meta:
+        return entry
+    return APIEntry(
+        name=entry.name,
+        qualified_name=str(meta.get("qualified_name", entry.qualified_name)),
+        source_line=entry.source_line,
+        docstring=entry.docstring,
+        source_path=entry.source_path,
+        is_class=bool(meta.get("is_class", entry.is_class)),
+        is_concept=bool(meta.get("is_concept", entry.is_concept)),
+        params=list(meta.get("params", entry.params)),  # type: ignore[arg-type]
+        returns=str(meta.get("returns", entry.returns)),
+    )
+
+
+def _module_qualname(path: Path) -> str:
+    path = path.resolve()
+    catlass_root = (PACKAGE_ROOT / "catlass").resolve()
+    try:
+        rel = path.relative_to(catlass_root)
+        return "catlass." + ".".join(rel.with_suffix("").parts)
+    except ValueError:
+        rel = path.relative_to(PACKAGE_ROOT.resolve())
+        return ".".join(rel.with_suffix("").parts)
+
+
+def _collect_host_file(path: Path) -> dict[str, APIEntry]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    mod = _module_qualname(path)
+    src = path.resolve()
+    entries: dict[str, APIEntry] = {}
+
+    def maybe_add(source_name: str, entry: APIEntry) -> None:
+        entry = _apply_overrides(source_name, entry)
+        display = HOST_DISPLAY_NAMES.get(source_name, source_name)
+        entry.name = display
+        entries[display] = entry
+
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            if not _should_collect(node.name):
+                continue
+            doc = ast.get_docstring(node) or ""
+            if directory_path(doc) is None:
+                continue
+            maybe_add(
+                node.name,
+                function_entry(
+                    node.name,
+                    node,
+                    qualified_name=f"{mod}.{node.name}",
+                    source_path=src,
+                ),
+            )
+        elif isinstance(node, ast.ClassDef):
+            class_doc = ast.get_docstring(node) or ""
+            if directory_path(class_doc) is not None and _should_collect(node.name):
+                maybe_add(
+                    node.name,
+                    APIEntry(
+                        name=node.name,
+                        qualified_name=f"{mod}.{node.name}",
+                        source_line=node.lineno,
+                        docstring=class_doc,
+                        is_class=True,
+                        source_path=src,
+                    ),
+                )
+            for child in node.body:
+                if not isinstance(child, ast.FunctionDef):
+                    continue
+                raw = f"{node.name}.{child.name}"
+                if not _should_collect(child.name) and raw not in HOST_DISPLAY_NAMES:
+                    continue
+                doc = ast.get_docstring(child) or ""
+                if directory_path(doc) is None:
+                    continue
+                maybe_add(
+                    raw,
+                    function_entry(
+                        raw,
+                        child,
+                        qualified_name=f"{mod}.{node.name}.{child.name}",
+                        source_path=src,
+                        drop_self=True,
+                    ),
+                )
+    return entries
+
+
+def parse_host_apis() -> dict[str, APIEntry]:
+    entries: dict[str, APIEntry] = {}
+    for path in HOST_SOURCE_PATHS:
+        if not path.is_file():
+            raise FileNotFoundError(f"host API source not found: {path}")
+        entries.update(_collect_host_file(path))
+    # Language-boundary topic: kept in the generator, not as a runtime stub.
+    jit = entries.get("jit")
+    entries["Constexpr Callable arguments"] = APIEntry(
+        name="Constexpr Callable arguments",
+        qualified_name="Host language boundary · Constexpr Callable",
+        source_line=(jit.source_line + 1) if jit and jit.source_line else None,
+        docstring=CONSTEXPR_CALLABLE_DOC,
+        source_path=jit.source_path if jit else None,
+        is_concept=True,
+    )
+    return entries
+
+
+def generate(*, docs_dir: Path | None = None) -> str:
+    docs_dir = docs_dir or OUTPUT_PATH.parent
+    return render_reference(
+        parse_host_apis(),
+        docs_dir=docs_dir,
+        title="TLA DSL Host API Reference",
+        intro=[
+            "This document describes the **TLA DSL Host-side APIs** "
+            "(typically imported as `import catlass.tla as tla`). It covers the "
+            "`@tla.kernel` and `@tla.extern` decorators, Host `@dataclass` packing, "
+            "`tla.compile` / `JitCompiledFunction` launch, and Host tensors. "
+            "Environment variables are in "
+            "`docs/zh/kernel_development/core_concepts/env_vars.md`. "
+            "Kernel-side ops live in `docs/en/api/kernel_api_reference.md`.",
+            "Interface descriptions and examples come from each API's source docstring "
+            "(`Directory:` plus `Description:` / `Parameters:` / `Constraints:` / `Example:`).",
+            "These APIs are called from Python Host scripts, **outside** a `@tla.kernel` "
+            "function body.",
+        ],
+        header_sources=(
+            "Do not edit manually. Update Host docstrings in catlass/dsl.py,",
+            "catlass/catlass_dsl/catlass.py, catlass/base_dsl/compiler.py,",
+            "catlass/base_dsl/jit_executor.py, catlass/execution_lowering.py,",
+            "catlass/tla/ffi.py, and catlass/tla/runtime.py. Constexpr Callable",
+            "language-boundary text lives in this generator (`CONSTEXPR_CALLABLE_DOC`).",
+        ),
+        leftovers_title="Other Host APIs",
+        leftovers_blurb=(
+            "APIs still collected from Host sources but not yet filed under "
+            "the directory tree above."
+        ),
+        directory_order=DIRECTORY_ORDER,
+        directory_intros=DIRECTORY_INTROS,
+        default_source_path=DEFAULT_SOURCE_PATH,
+        generated_by=GENERATED_BY,
+    )
+
+
+def main() -> int:
+    return run_cli(
+        description=__doc__,
+        default_output=OUTPUT_PATH,
+        generate_fn=generate,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
