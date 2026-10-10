@@ -42,8 +42,6 @@ public:
         GM_ADDR x, GM_ADDR filter, GM_ADDR bias, GM_ADDR y,
         GM_ADDR workspace, const Conv2dSiluTilingData* tiling)
     {
-        // 系统 workspace（框架分配，含同步区等）
-        SetSysWorkspace(workspace);
         // 用户自己的中间结果区域（AIC 写 / AIV 读）
         userWorkspace_ = GetUserWorkspace(workspace);
 

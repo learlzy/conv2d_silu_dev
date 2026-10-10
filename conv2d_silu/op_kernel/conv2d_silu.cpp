@@ -1,12 +1,3 @@
-// #include "kernel_operator.h"
-// #include "conv2d_silu_tiling.h"
-
-// extern "C" __global__ __aicore__ void conv2d_silu(GM_ADDR x, GM_ADDR filter, GM_ADDR bias, GM_ADDR y, GM_ADDR workspace, GM_ADDR tiling) {
-//     REGISTER_TILING_DEFAULT(Conv2dSiluTilingData);
-//     GET_TILING_DATA(tilingData, tiling);
-//     // TODO: user kernel impl
-// }
-
 #include "conv2d_silu.h"
 #include "conv2d_silu_tiling_key.h"
 
