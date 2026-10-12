@@ -20,13 +20,12 @@
 #include <cstdint>
 
 struct Conv2dSiluTilingData {
-    // problem shape
+    uint32_t c0;
     uint32_t batch;
     uint32_t hi;
     uint32_t wi;
     uint32_t cin;
     uint32_t cout;
-
     uint32_t kh;
     uint32_t kw;
 
@@ -40,14 +39,6 @@ struct Conv2dSiluTilingData {
 
     uint32_t dilationH;
     uint32_t dilationW;
-
-    // derived
-    uint32_t ho;
-    uint32_t wo;
-    uint32_t cin1;
-    uint32_t cout1;
-    uint32_t coutRound;
-    uint32_t c0;
 
     // workspace size (user workspace, bytes)
     uint64_t workspaceSize;
