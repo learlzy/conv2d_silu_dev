@@ -1,6 +1,7 @@
 #include "conv2d_silu_utils.h"
 
 
+
 namespace ge {
 ge::graphStatus InferShape(gert::InferShapeContext* context)
 {
@@ -23,26 +24,21 @@ ge::graphStatus InferShape(gert::InferShapeContext* context)
     }
     ge::DataType dtype = xDesc->GetDataType();
     size_t elementBytes = (dtype == ge::DT_FLOAT16) ? sizeof(uint16_t) : sizeof(float);
-    const int64_t c0 = static_cast<int64_t>(BYTE_PER_C0 / elementBytes);  // FP16->16, FP32->8
-
+    
     // x: [N, Cin1, Hin, Win, C0]
     int64_t N    = xShape->GetDim(0);
     int64_t Cin1 = xShape->GetDim(1);
     int64_t Hin  = xShape->GetDim(2);
     int64_t Win  = xShape->GetDim(3);
-    // xShape->GetDim(4) 应为 c0，可做校验
-    if (xShape->GetDim(4) != c0) {
-        return GRAPH_FAILED;
-    }
+    int64_t C0   = xShape->GetDim(4);
 
-    // filter 在当前仓库 Tiling 中按 4-D NCHW (Cout, Cin, Kh, Kw) 解析
-    // 若实际传入的是 FRACTAL_Z 5/4 维，需按真实布局改下面几行
-    if (filterShape->GetDimNum() < 4) {
+    // filter 在当前仓库 Tiling 中按 5-D {Cin1, Kh, Kw, Cout, C0} 解析
+    if (filterShape->GetDimNum() < 5) {
         return GRAPH_FAILED;
     }
-    int64_t Cout = filterShape->GetDim(0);   // 与现有 TilingFunc 保持一致
-    int64_t Kh   = filterShape->GetDim(2);
-    int64_t Kw   = filterShape->GetDim(3);
+    int64_t Cout = filterShape->GetDim(3);
+    int64_t Kh   = filterShape->GetDim(1);
+    int64_t Kw   = filterShape->GetDim(2);
 
     const auto* attrs = context->GetAttrs();
     if (attrs == nullptr) {
@@ -73,8 +69,9 @@ ge::graphStatus InferShape(gert::InferShapeContext* context)
         padRight  = pads[3];
     }
     
-    // todo: 计算输出尺寸 Hout, Wout
-    
+    // 计算输出尺寸 Hout, Wout
+    int64_t Hout = (Hin + padTop + padBottom - dilH * (Kh - 1) - 1) / strideH + 1;
+    int64_t Wout = (Win + padLeft + padRight - dilW * (Kw - 1) - 1) / strideW + 1;
 
     if (strideH <= 0 || strideW <= 0 || dilH <= 0 || dilW <= 0 ||
         Hout <= 0 || Wout <= 0) {
@@ -82,7 +79,7 @@ ge::graphStatus InferShape(gert::InferShapeContext* context)
     }
 
     // 输出通道对齐到 C0
-    int64_t Cout1 = (Cout + c0 - 1) / c0;
+    int64_t Cout1 = (Cout + C0 - 1) / C0;
 
     // y: [N, Cout1, Hout, Wout, C0]
     yShape->SetDimNum(5);
@@ -90,7 +87,7 @@ ge::graphStatus InferShape(gert::InferShapeContext* context)
     yShape->SetDim(1, Cout1);
     yShape->SetDim(2, Hout);
     yShape->SetDim(3, Wout);
-    yShape->SetDim(4, c0);
+    yShape->SetDim(4, C0);
 
     return GRAPH_SUCCESS;
 }

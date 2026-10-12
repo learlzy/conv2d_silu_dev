@@ -7,9 +7,19 @@ namespace optiling {
 
 
 static size_t CalcUsrWorkspaceSize(uint32_t batch, uint32_t ho, uint32_t wo,
-                                   uint32_t cout1, size_t elementBytes)
+                                   uint32_t cout1, uint32_t c0, size_t elementBytes)
 {
-    return 0;
+    size_t lenWorkspace = static_cast<size_t>(batch) * cout1 * ho * wo * c0;
+    size_t result = lenWorkspace * elementBytes;
+    return result;
+}   
+
+static uint64_t GetTilingKeyByDtype(ge::DataType dtype)
+{
+    if (dtype == ge::DT_FLOAT) {
+        return static_cast<uint64_t>(CONV2D_SILU_SCH_MODE_FP32);
+    }
+    return static_cast<uint64_t>(CONV2D_SILU_SCH_MODE_FP16);
 }
 
 
@@ -48,33 +58,29 @@ ge::graphStatus TilingFunc(gert::TilingContext* context)
     const auto& xDims = xShape->GetStorageShape();
     const auto& fDims = filterShape->GetStorageShape();
 
-    // 输入约定 NCHW，filter 约定 NCHW (cout, cin, kh, kw)
+    // 输入约定 5-D {N, Cin1, H, W, C0}，filter 约定 5-D {Cin1, Kh, Kw, Cout, C0}
     uint32_t batch = static_cast<uint32_t>(xDims.GetDim(0));
-    uint32_t cin  = static_cast<uint32_t>(xDims.GetDim(1));
+    uint32_t cin1  = static_cast<uint32_t>(xDims.GetDim(1));
     uint32_t hi   = static_cast<uint32_t>(xDims.GetDim(2));
     uint32_t wi   = static_cast<uint32_t>(xDims.GetDim(3));
-    uint32_t cout = static_cast<uint32_t>(fDims.GetDim(0));
-    uint32_t kh   = static_cast<uint32_t>(fDims.GetDim(2));
-    uint32_t kw   = static_cast<uint32_t>(fDims.GetDim(3));
+    uint32_t c0   = static_cast<uint32_t>(xDims.GetDim(4));
+    uint32_t cout = static_cast<uint32_t>(fDims.GetDim(3));
+    uint32_t kh   = static_cast<uint32_t>(fDims.GetDim(1));
+    uint32_t kw   = static_cast<uint32_t>(fDims.GetDim(2));
+    uint32_t cout1 = (cout + c0 - 1) / c0;
+    uint32_t ho = (hi + padTop + padBottom - dilH * (kh - 1) - 1) / strideH + 1;
+    uint32_t wo = (wi + padLeft + padRight - dilW * (kw - 1) - 1) / strideW + 1;
 
     // 元素字节数
     size_t elementBytes = (dtype == ge::DT_FLOAT16) ? sizeof(uint16_t) : sizeof(float);
 
-    
-
-    // 简单合法性检查（对齐 Catlass CanImplement 的一部分）
-    if (strideH == 0 || strideW == 0 || dilH == 0 || dilW == 0 ||
-        ho == 0 || wo == 0) {
-        return ge::GRAPH_FAILED;
-    }
-
     // 填充 tiling data
     Conv2dSiluTilingData* tilingData = context->GetTilingData<Conv2dSiluTilingData>();
-
+    // Conv2dParams所需参数
     tilingData->batch = batch;
     tilingData->hi = hi;
     tilingData->wi = wi;
-    tilingData->cin = cin;
+    tilingData->cin = cin1 * c0;
     tilingData->cout = cout;
     tilingData->kh = kh;
     tilingData->kw = kw;
@@ -86,16 +92,12 @@ ge::graphStatus TilingFunc(gert::TilingContext* context)
     tilingData->strideW = static_cast<uint32_t>(strideW);
     tilingData->dilationH = static_cast<uint32_t>(dilH);
     tilingData->dilationW = static_cast<uint32_t>(dilW);
-
-    tilingData->ho = ho;
-    tilingData->wo = wo;
+    // 额外参数
     tilingData->cin1 = cin1;
     tilingData->cout1 = cout1;
-    tilingData->coutRound = coutRound;
     tilingData->c0 = c0;
-
     // 计算用户 workspace（手工复现 GetWorkspaceSize）
-    size_t usrWorkspaceSize = CalcUsrWorkspaceSize(batch, ho, wo, cout1, elementBytes);
+    size_t usrWorkspaceSize = CalcUsrWorkspaceSize(batch, ho, wo, cout1, c0, elementBytes);
     tilingData->workspaceSize = static_cast<uint64_t>(usrWorkspaceSize);
 
     // tiling key

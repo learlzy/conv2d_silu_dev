@@ -20,7 +20,7 @@
 #include <cstdint>
 
 struct Conv2dSiluTilingData {
-    uint32_t c0;
+    // Conv2dParams所需参数
     uint32_t batch;
     uint32_t hi;
     uint32_t wi;
@@ -28,18 +28,18 @@ struct Conv2dSiluTilingData {
     uint32_t cout;
     uint32_t kh;
     uint32_t kw;
-
     uint32_t padLeft;
     uint32_t padRight;
     uint32_t padTop;
     uint32_t padBottom;
-
     uint32_t strideH;
     uint32_t strideW;
-
     uint32_t dilationH;
     uint32_t dilationW;
-
+    // 额外参数
+    uint32_t cin1;
+    uint32_t cout1;
+    uint32_t c0;
     // workspace size (user workspace, bytes)
     uint64_t workspaceSize;
 };
