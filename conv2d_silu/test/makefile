@@ -1,4 +1,4 @@
-OPP_CUSTOM_PATH ?= $(ASCEND_HOME_PATH)/opp/vendors/customize/op_api
+OPP_CUSTOM_PATH ?= ${ASCEND_HOME_PATH}/opp/vendors/customize/op_api
 
 test_conv2d_silu_aclnn: test_conv2d_silu_aclnn.cpp
 	g++ -std=c++17 test_conv2d_silu_aclnn.cpp \
