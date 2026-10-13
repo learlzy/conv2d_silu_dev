@@ -128,9 +128,7 @@ public:
         return result;
     }
 
-
-    //原生实现中的workspace类型是uint8_t*
-    static Params ToUnderlyingArguments(const Arguments& args, GM_ADDR workspace)
+    static Params ToUnderlyingArguments(const Arguments& args, uint8_t* workspace)
     {
 #if defined(CATLASS_ARCH) && CATLASS_ARCH == 3510
         auto layoutFmap = tla::MakeLayoutFmap<ElementFmap>(

@@ -22,6 +22,7 @@
 #include "conv2d_silu_tiling.h"
 #include "conv2d_silu_kernel_template.h"
 
+
 namespace NsConv2dSilu {
 
 using namespace AscendC;
@@ -58,7 +59,12 @@ public:
         args_.ptrOutput = y;
 
         // 转成底层 Params（内部会填充 layout 和 epilogueParams）
-        params_ = Conv2dKernel::ToUnderlyingArguments(args_, userWorkspace_);
+        uint64_t userWorkspace_addr_val = reinterpret_cast<uint64_t>(userWorkspace_);
+        uint8_t* userWorkspace_ptr = reinterpret_cast<uint8_t*>(userWorkspace_addr_val);
+        AscendC::printf("ok 0 ------------------------------------\n");
+        return;
+        params_ = Conv2dKernel::ToUnderlyingArguments(args_, userWorkspace_ptr); // 这行代码报错！
+        AscendC::printf("ok 1 ------------------------------------\n");
     }
 
     __aicore__ inline void Process()

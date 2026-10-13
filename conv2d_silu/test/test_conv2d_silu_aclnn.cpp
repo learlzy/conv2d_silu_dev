@@ -379,7 +379,7 @@ static int RunAclnnConv2dSilu(const Conv2dParams& p,
     ret = aclrtSynchronizeStream(stream);
     if (ret != ACL_SUCCESS) {
         const char* errMsg = aclGetRecentErrMsg();
-        LOG_PRINT("aclnnConv2dSiluGetWorkspaceSize failed. ret=%d msg=%s\n", ret, errMsg ? errMsg : "");
+        LOG_PRINT("aclrtSynchronizeStream failed. ret=%d msg=%s\n", ret, errMsg ? errMsg : "");
         // 清理
         aclDestroyTensor(xTensor); aclDestroyTensor(wTensor);
         aclDestroyTensor(bTensor); aclDestroyTensor(yTensor);

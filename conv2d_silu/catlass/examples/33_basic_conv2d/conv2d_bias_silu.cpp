@@ -37,6 +37,9 @@
 #include "golden.hpp"
 #include "helper.hpp"
 
+#include "kernel_operator.h"
+
+
 // ENABLE_FP16_ACCUMULATOR：1=启用fp16累加特化（L0C按half累加）；0=默认fp32累加
 #ifndef ENABLE_FP16_ACCUMULATOR
 #define ENABLE_FP16_ACCUMULATOR 0
@@ -133,6 +136,9 @@ struct Options {
         return true;
     }
 };
+
+
+
 
 static void Run(Options const& options)
 {
@@ -289,6 +295,31 @@ static void Run(Options const& options)
         ACL_CHECK(aclrtMalloc(reinterpret_cast<void**>(&deviceWorkspace), sizeWorkspace, ACL_MEM_MALLOC_HUGE_FIRST));
         ACL_CHECK(aclrtMemset(deviceWorkspace, sizeWorkspace, 0, sizeWorkspace));
     }
+
+
+    // debug
+
+    printf("batch: %d\n", arguments.problemShape.batch());
+    printf("hi: %d\n", arguments.problemShape.hi());
+    printf("wi: %d\n", arguments.problemShape.wi());
+    printf("cin: %d\n", arguments.problemShape.cin());
+    printf("cout: %d\n", arguments.problemShape.cout());
+    printf("kh: %d\n", arguments.problemShape.kh());
+    printf("kw: %d\n", arguments.problemShape.kw());
+    printf("padLeft: %d\n", arguments.problemShape.padLeft());
+    printf("padRight: %d\n", arguments.problemShape.padRight());
+    printf("padTop: %d\n", arguments.problemShape.padTop());
+    printf("padBottom: %d\n", arguments.problemShape.padBottom());
+    printf("strideH: %d\n", arguments.problemShape.strideH());
+    printf("strideW: %d\n", arguments.problemShape.strideW());
+    printf("dilationH: %d\n", arguments.problemShape.dilationH());
+    printf("dilationW: %d\n", arguments.problemShape.dilationW());
+    printf("cin1: %d\n", arguments.problemShape.cin1());
+    printf("cout1: %d\n", arguments.problemShape.cout1());
+    printf("c0: %d\n", arguments.problemShape.C0);
+    printf("workspaceSize: %d\n", sizeWorkspace);
+
+
 
     conv2d_op.Initialize(arguments, deviceWorkspace);
     conv2d_op(stream, aicCoreNum, hardwareSyncAddr);

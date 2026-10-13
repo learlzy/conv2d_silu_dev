@@ -17,5 +17,5 @@ npu_op_kernel_options(ascendc_kernels ALL OPTIONS -I ${CATLASS_INCLUDE_PATH})
 ./build_out/custom_opp*.run
 
 设置环境变量：
-export LD_LIBRARY_PATH=/home/learlee/Ascend/cann-9.0.0/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH}
 
