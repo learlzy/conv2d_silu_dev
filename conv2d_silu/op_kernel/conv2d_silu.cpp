@@ -15,7 +15,6 @@ __global__ __aicore__ void conv2d_silu(
     if constexpr (schMode == CONV2D_SILU_SCH_MODE_FP16) {
         NsConv2dSilu::Conv2dSiluKernel<half, half> op;
         op.Init(x, filter, bias, y, workspace, &tilingData);
-        return;
         op.Process();
     } else if constexpr (schMode == CONV2D_SILU_SCH_MODE_FP32) {
         NsConv2dSilu::Conv2dSiluKernel<float, float> op;

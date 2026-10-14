@@ -21,6 +21,7 @@
 
 #include "conv2d_silu_tiling.h"
 #include "conv2d_silu_kernel_template.h"
+#include "print_info.h"
 
 
 namespace NsConv2dSilu {
