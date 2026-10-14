@@ -36,6 +36,8 @@ public:
     using Conv2dKernel = typename Traits::Conv2dKernel;
     using Arguments = typename Conv2dKernel::Arguments;
     using Params = typename Conv2dKernel::Params;
+    using BlockEpilogue = typename Conv2dKernel::BlockEpilogue;
+    static constexpr uint16_t C0_WORKSPACE = BYTE_PER_C0 / sizeof(Traits::ElementOutput);
 
     __aicore__ inline Conv2dSiluKernel() {}
 
@@ -59,12 +61,7 @@ public:
         args_.ptrOutput = y;
 
         // 转成底层 Params（内部会填充 layout 和 epilogueParams）
-        uint64_t userWorkspace_addr_val = reinterpret_cast<uint64_t>(userWorkspace_);
-        uint8_t* userWorkspace_ptr = reinterpret_cast<uint8_t*>(userWorkspace_addr_val);
-        AscendC::printf("ok 0 ------------------------------------\n");
-        return;
-        params_ = Conv2dKernel::ToUnderlyingArguments(args_, userWorkspace_ptr); // 这行代码报错！
-        AscendC::printf("ok 1 ------------------------------------\n");
+        params_ = ToUnderlyingArguments(args_, userWorkspace_); // 这行代码报错！
     }
 
     __aicore__ inline void Process()
@@ -97,6 +94,28 @@ private:
             static_cast<uint8_t>(t->dilationW)
         };
         return Catlass::Conv2dParams::MakeConv2dParams(dataSizes, filterSizes, pads, strides, dilations);
+    }
+
+    __aicore__ inline Params ToUnderlyingArguments(const Arguments& args, GM_ADDR workspace)
+    {
+        auto layoutFmap = tla::MakeLayoutFmap<Traits::ElementFmap>(
+            args.problemShape.batch(), args.problemShape.cin1(), args.problemShape.hi(), args.problemShape.wi());
+        auto layoutFilter = tla::MakeLayoutFilter<Traits::ElementFilter, Arch::PositionGM>(
+            args.problemShape.cin1(), args.problemShape.kh(), args.problemShape.kw(), args.problemShape.cout());
+        auto layoutOutput = tla::MakeLayoutFmap<Traits::ElementOutput>(
+            args.problemShape.batch(), args.problemShape.cout1(), args.problemShape.ho(), args.problemShape.wo());
+
+        layout::NC1HWC0 layoutWorkspaceEpilogue{
+            args.problemShape.batch(), args.problemShape.cout1(), args.problemShape.ho(), args.problemShape.wo(),
+            C0_WORKSPACE};
+
+        typename BlockEpilogue::Params epilogueParams(
+            workspace, layoutWorkspaceEpilogue, args.ptrBias, args.problemShape.cout(), args.ptrOutput,
+            layoutWorkspaceEpilogue);
+
+        Params params{args.problemShape, args.ptrFmap,       layoutFmap,     args.ptrFilter, layoutFilter,
+                      args.ptrBias, workspace, args.ptrOutput, layoutOutput,   epilogueParams};
+        return params;
     }
 
 private:
