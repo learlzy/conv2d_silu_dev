@@ -61,7 +61,7 @@ public:
         args_.ptrOutput = y;
 
         // 转成底层 Params（内部会填充 layout 和 epilogueParams）
-        params_ = ToUnderlyingArguments(args_, userWorkspace_); // 这行代码报错！
+        params_ = ToUnderlyingArguments(args_, userWorkspace_);
     }
 
     __aicore__ inline void Process()
