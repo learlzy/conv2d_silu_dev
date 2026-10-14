@@ -37,7 +37,7 @@ public:
     using Arguments = typename Conv2dKernel::Arguments;
     using Params = typename Conv2dKernel::Params;
     using BlockEpilogue = typename Conv2dKernel::BlockEpilogue;
-    static constexpr uint16_t C0_WORKSPACE = BYTE_PER_C0 / sizeof(Traits::ElementOutput);
+    static constexpr uint16_t C0_WORKSPACE = BYTE_PER_C0 / sizeof(typename Traits::ElementOutput);
 
     __aicore__ inline Conv2dSiluKernel() {}
 
@@ -98,11 +98,11 @@ private:
 
     __aicore__ inline Params ToUnderlyingArguments(const Arguments& args, GM_ADDR workspace)
     {
-        auto layoutFmap = tla::MakeLayoutFmap<Traits::ElementFmap>(
+        auto layoutFmap = tla::MakeLayoutFmap<typename Traits::ElementFmap>(
             args.problemShape.batch(), args.problemShape.cin1(), args.problemShape.hi(), args.problemShape.wi());
-        auto layoutFilter = tla::MakeLayoutFilter<Traits::ElementFilter, Arch::PositionGM>(
+        auto layoutFilter = tla::MakeLayoutFilter<typename Traits::ElementFilter, Arch::PositionGM>(
             args.problemShape.cin1(), args.problemShape.kh(), args.problemShape.kw(), args.problemShape.cout());
-        auto layoutOutput = tla::MakeLayoutFmap<Traits::ElementOutput>(
+        auto layoutOutput = tla::MakeLayoutFmap<typename Traits::ElementOutput>(
             args.problemShape.batch(), args.problemShape.cout1(), args.problemShape.ho(), args.problemShape.wo());
 
         layout::NC1HWC0 layoutWorkspaceEpilogue{
