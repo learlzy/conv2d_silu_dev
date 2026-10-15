@@ -1,3 +1,4 @@
 conv2d_silu/build_out/
+conv2d_silu/CMakePresets.json
 fusion_pass_cpp/build/
 test/build/
