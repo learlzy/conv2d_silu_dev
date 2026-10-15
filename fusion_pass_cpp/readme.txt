@@ -28,3 +28,6 @@ ln -sf dynamic/conv2d_silu.py conv2d_silu.py
 8) 验证pass是否写入了GE：
 atc --model=你的模型.onnx --framework=5 \
     --soc_version=Ascend910B3 --output=./out --log=debug
+
+9) 统计conv2d的strides、pads、dilations
+python script/collect_conv2d_nodes_info.py
