@@ -1,12 +1,13 @@
+====================================== yolov8s_subgraph =======================================
 - 编译计算图：
-atc --framework=5 --model=yolo26s.onnx \
+atc --framework=5 --model=../yolov8s_subgraph.onnx \
 --input_format=NCHW --input_shape="images:8,3,640,640" \
---soc_version=Ascend910B3  --output=yolo26s
+--soc_version=Ascend910B3  --output=yolov8s_subgraph
 
-- 输出完整计算图信息：
+- 输出完整计算图信息json：
 atc --mode=1 \
---om=yolo26s.om \
---json=yolo26s_om.json
+--om=yolov8s_subgraph.om \
+--json=yolov8s_subgraph_om.json
 
 - 输出所有阶段的计算图：
 cd build
@@ -17,3 +18,26 @@ atc --framework=5 --model=../yolov8s_subgraph.onnx \
 
 - 执行推理
 python -m ais_bench --loop=1000 --model=yolov5s.om
+
+
+=============================================== yolov8 =====================================================
+- 编译计算图：
+atc --framework=5 --model=../yolov8s.onnx \
+--input_format=NCHW --input_shape="images:8,3,640,640" \
+--soc_version=Ascend910B3  --output=yolov8s
+
+- 输出完整计算图信息json：
+atc --mode=1 \
+--om=yolov8s.om \
+--json=yolov8s_om.json
+
+- 输出所有阶段的计算图：
+cd build
+export DUMP_GE_GRAPH=1
+atc --framework=5 --model=../yolov8s.onnx \
+--input_format=NCHW --input_shape="images:8,3,640,640" \
+--soc_version=Ascend910B3  --output=yolov8s
+
+- 执行推理
+python -m ais_bench --loop=1000 --model=yolov8s.om
+
