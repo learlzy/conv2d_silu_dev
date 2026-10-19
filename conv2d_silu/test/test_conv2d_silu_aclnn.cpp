@@ -438,44 +438,42 @@ static int RunOneCase(const Conv2dParams& p, aclrtStream stream)
     int ret = RunAclnnConv2dSilu(p, hostFmap, hostFilter, hostBias, hostOutput, stream);
     CHECK_RET(ret == 0, LOG_PRINT("RunAclnnConv2dSilu failed\n"); return ret);
 
-    // // ---------- 2. CPU Golden（照搬 example） ----------
-    // std::vector<float> goldenConv;
-    // ComputeConv2d(p, hostFmap, hostFilter, goldenConv);
+    // ---------- 2. CPU Golden（照搬 example） ----------
+    std::vector<float> goldenConv;
+    ComputeConv2d(p, hostFmap, hostFilter, goldenConv);
 
-    // std::vector<float> goldenFinal;
-    // ComputeGoldenFinal(p, goldenConv, hostBias, goldenFinal);
+    std::vector<float> goldenFinal;
+    ComputeGoldenFinal(p, goldenConv, hostBias, goldenFinal);
 
-    // // 尾通道清零（与 example 中 golden::ClearInvalidOutput 一致）
-    // ClearInvalidOutput(hostOutput, p);
+    // 尾通道清零（与 example 中 golden::ClearInvalidOutput 一致）
+    ClearInvalidOutput(hostOutput, p);
 
-    // // ---------- 3. 精度比对 ----------
-    // auto errors = CompareData(hostOutput, goldenFinal, 1e-2f, 1e-2f);
-    // LOG_PRINT("Output(AIV) vs golden SiLU(conv+bias) comparison: ");
-    // if (errors.empty()) {
-    //     LOG_PRINT("success.\n");
-    //     return 0;
-    // } else {
-    //     LOG_PRINT("failed. Error count: %zu\n", errors.size());
-    //     // 打印前 10 个错误位置
-    //     for (size_t i = 0; i < errors.size() && i < 10; ++i) {
-    //         uint64_t off = errors[i];
-    //         uint32_t n  = off / (uint64_t(cout1) * ho * wo * c0);
-    //         uint64_t rem = off % (uint64_t(cout1) * ho * wo * c0);
-    //         uint32_t c1 = rem / (uint64_t(ho) * wo * c0);
-    //         rem %= uint64_t(ho) * wo * c0;
-    //         uint32_t h = rem / (uint64_t(wo) * c0);
-    //         rem %= uint64_t(wo) * c0;
-    //         uint32_t w = rem / c0;
-    //         uint32_t c = c1 * c0 + rem % c0;
-    //         float a = Fp16ToFloat(hostOutput[off]);
-    //         float g = goldenFinal[off];
-    //         LOG_PRINT("  [out] n=%u c=%u h=%u w=%u  actual=%.6f golden=%.6f\n",
-    //                   n, c, h, w, a, g);
-    //     }
-    //     return 1;
-    // }
-
-    return 0;
+    // ---------- 3. 精度比对 ----------
+    auto errors = CompareData(hostOutput, goldenFinal, 1e-2f, 1e-2f);
+    LOG_PRINT("Output(AIV) vs golden SiLU(conv+bias) comparison: ");
+    if (errors.empty()) {
+        LOG_PRINT("success.\n");
+        return 0;
+    } else {
+        LOG_PRINT("failed. Error count: %zu\n", errors.size());
+        // 打印前 10 个错误位置
+        for (size_t i = 0; i < errors.size() && i < 10; ++i) {
+            uint64_t off = errors[i];
+            uint32_t n  = off / (uint64_t(cout1) * ho * wo * c0);
+            uint64_t rem = off % (uint64_t(cout1) * ho * wo * c0);
+            uint32_t c1 = rem / (uint64_t(ho) * wo * c0);
+            rem %= uint64_t(ho) * wo * c0;
+            uint32_t h = rem / (uint64_t(wo) * c0);
+            rem %= uint64_t(wo) * c0;
+            uint32_t w = rem / c0;
+            uint32_t c = c1 * c0 + rem % c0;
+            float a = Fp16ToFloat(hostOutput[off]);
+            float g = goldenFinal[off];
+            LOG_PRINT("  [out] n=%u c=%u h=%u w=%u  actual=%.6f golden=%.6f\n",
+                      n, c, h, w, a, g);
+        }
+        return 1;
+    }
 }
 
 // ============================================================
