@@ -16,6 +16,8 @@ make install
 cd build
 make clean_custom_pass
 
+============== 以下步骤好像是多余的 ==============
+
 6) 声明算子kernel路径：
 export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH} 
 

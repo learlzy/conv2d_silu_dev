@@ -17,7 +17,7 @@ atc --framework=5 --model=../yolov8s_subgraph.onnx \
 --soc_version=Ascend910B3  --output=yolov8s_subgraph
 
 - 执行推理
-python -m ais_bench --loop=1000 --model=yolov5s.om
+python -m ais_bench --loop=1000 --model=yolov8s_subgraph.om
 
 
 =============================================== yolov8 =====================================================
