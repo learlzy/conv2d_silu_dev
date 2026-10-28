@@ -238,9 +238,9 @@ static void Run(Options const& options)
     constexpr bool ENABLE_UNIT_FLAG = false;
     using DispatchPolicy =
         Conv::ConvPingpong<ArchTag, L1A_STAGES, L1B_STAGES, L0A_STAGES, L0B_STAGES, L0C_STAGES, ENABLE_UNIT_FLAG>;
-    using FmapL1TileShape = Catlass::Conv2dFmapL1Shape<8, 12, 8>;
-    using FilterL1TileShape = Catlass::Conv2dFilterL1Shape<96, 8>;
-    using L0TileShape = Catlass::Conv2dL0Shape<16, 96, 16>;
+    using FmapL1TileShape = Catlass::Conv2dFmapL1Shape<8, 12, 8>; // <Ho, Wo, Cin1_small>
+    using FilterL1TileShape = Catlass::Conv2dFilterL1Shape<96, 8>; // <Cout, Cin1_big>
+    using L0TileShape = Catlass::Conv2dL0Shape<16, 96, 16>; // <M, N, K>
 
     using ElementFmap = half;
     using ElementFilter = half;
