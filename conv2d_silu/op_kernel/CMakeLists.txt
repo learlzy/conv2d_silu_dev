@@ -17,6 +17,7 @@ set(CATLASS_INCLUDE_PATH ${CMAKE_SOURCE_DIR}/catlass/include)
 npu_op_kernel_options(ascendc_kernels ALL OPTIONS 
     -I ${CATLASS_INCLUDE_PATH}
     -DCATLASS_ARCH=2201
+    -DASCENDC_DUMP=0
 )
 
 npu_op_kernel_sources(ascendc_kernels
