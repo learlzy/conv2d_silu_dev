@@ -3,8 +3,8 @@ import csv
 from collections import defaultdict
 
 # ===================== 全局配置变量 =====================
-INPUT_JSON_PATH = "/home/learlee/dev/projects/conv2d_silu_dev/test/build/yolov8s_subgraph_om.json"
-OUTPUT_CSV_PATH = "/home/learlee/dev/projects/conv2d_silu_dev/test/build/yolov8s_subgraph_conv2d_info.csv"
+INPUT_JSON_PATH = "/home/learlee/dev/projects/conv2d_silu_dev/test/build/yolov8s_om.json"
+OUTPUT_CSV_PATH = "/home/learlee/dev/projects/conv2d_silu_dev/test/build/yolov8s_conv2d_info.csv"
 # True: 收集x/filter/bias/y的实际shape/layout；False: 不收集，聚合不计入这些字段
 COLLECT_TENSOR_INFO = True
 # True: 收集tensor原始shape、原始origin_format，聚合key包含原始信息；False: 不收集，聚合不计入原始信息
