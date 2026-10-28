@@ -31,7 +31,7 @@
 // ============================================================
 // 可配置参数（在这里改）
 // ============================================================
-constexpr int WARMUP_ITERS = 1;   // 预热轮次
+constexpr int WARMUP_ITERS = 0;   // 预热轮次
 constexpr int TEST_ITERS   = 1;   // 正式测试轮次
 
 // ============================================================
@@ -324,19 +324,19 @@ int main()
     // 示例：N=2, Cin=112, H=33, W=43, Cout=80, K=3x3, pad=1, stride=1, dil=1
     {
         // 默认参数与 example 保持一致
-    uint32_t dataSizes[5] = {2, 33, 43, 112, 80}; // {batch, hi, wi, cin, cout}
-    uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
-    uint8_t pads[4] = {2, 2, 2, 2};               // {padLeft, padRight, padTop, padBottom}
-    uint8_t strides[2] = {1, 1};                  // {strideH, strideW}
-    uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
-    int32_t deviceId = 0;
-
-    // uint32_t dataSizes[5] = {8, 640, 640, 3, 32}; // {batch, hi, wi, cin, cout}
+    // uint32_t dataSizes[5] = {2, 33, 43, 112, 80}; // {batch, hi, wi, cin, cout}
     // uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
-    // uint8_t pads[4] = {1, 1, 1, 1};               // {padLeft, padRight, padTop, padBottom}
-    // uint8_t strides[2] = {2, 2};                  // {strideH, strideW}
+    // uint8_t pads[4] = {2, 2, 2, 2};               // {padLeft, padRight, padTop, padBottom}
+    // uint8_t strides[2] = {1, 1};                  // {strideH, strideW}
     // uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
     // int32_t deviceId = 0;
+
+    uint32_t dataSizes[5] = {8, 640, 640, 3, 32}; // {batch, hi, wi, cin, cout}
+    uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
+    uint8_t pads[4] = {1, 1, 1, 1};               // {padLeft, padRight, padTop, padBottom}
+    uint8_t strides[2] = {2, 2};                  // {strideH, strideW}
+    uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
+    int32_t deviceId = 0;
 
     Conv2dParams problemParams =
         Conv2dParams::MakeConv2dParams(dataSizes, filterSizes, pads, strides, dilations);
@@ -345,12 +345,6 @@ int main()
             LOG_PRINT("RunOneCasePerf failed\n");
         }
     }
-
-    // 可以继续加更多 case ...
-    // {
-    //     Conv2dParams p = Conv2dParams::Make(...);
-    //     RunOneCasePerf(p, stream);
-    // }
 
     aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
