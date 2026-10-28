@@ -1,6 +1,6 @@
 OPP_CUSTOM_PATH ?= ${ASCEND_HOME_PATH}/opp/vendors/customize/op_api
-CATLASS_INCLUDE   ?= ../catlass/include
-CATLASS_EX_COMMON ?= ../catlass/examples/common
+CATLASS_INCLUDE   ?= ../../catlass/include
+CATLASS_EX_COMMON ?= ../../catlass/examples/common
 
 
 test_validation_conv2d_silu_aclnn: test_validation_conv2d_silu_aclnn.cpp
