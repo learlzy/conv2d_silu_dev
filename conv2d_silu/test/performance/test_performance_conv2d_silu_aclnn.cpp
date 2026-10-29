@@ -1,9 +1,15 @@
 /**
- * test_perf_conv2d_silu_aclnn.cpp
+ * test_performance_conv2d_silu_aclnn.cpp
  *
  * 纯性能统计：只对 aclnnConv2dSilu 接口计时
  * - 可在代码内指定 warmup / test 轮次
- * - 统计平均耗时、最小/最大耗时
+ * - 统计平均耗时、最小/最大耗时、标准差
+ * - 不做精度对比
+ *
+ * CANN 两段式规则：
+ *   每一次调用 aclnnConv2dSilu 之前，都必须先调用一次
+ *   aclnnConv2dSiluGetWorkspaceSize 获取新的 executor。
+ *   计时只统计 aclnnConv2dSilu + synchronize，不包含 GetWorkspaceSize。
  *
  * 数据布局与 validation 一致：
  *   x/y   : NC1HWC0  (fp16)
@@ -32,7 +38,19 @@
 // 可配置参数（在这里改）
 // ============================================================
 constexpr int WARMUP_ITERS = 0;   // 预热轮次
-constexpr int TEST_ITERS   = 1;   // 正式测试轮次
+constexpr int TEST_ITERS   = 2;   // 正式测试轮次
+
+// uint32_t dataSizes[5] = {2, 33, 43, 112, 80}; // {batch, hi, wi, cin, cout}
+// uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
+// uint8_t pads[4] = {2, 2, 2, 2};               // {padLeft, padRight, padTop, padBottom}
+// uint8_t strides[2] = {1, 1};                  // {strideH, strideW}
+// uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
+
+uint32_t dataSizes[5] = {8, 640, 640, 3, 32};
+uint8_t filterSizes[2] = {3, 3};
+uint8_t pads[4] = {1, 1, 1, 1};
+uint8_t strides[2] = {2, 2};
+uint8_t dilations[2] = {1, 1};
 
 // ============================================================
 // 宏与工具
@@ -47,15 +65,6 @@ constexpr int TEST_ITERS   = 1;   // 正式测试轮次
 #define LOG_PRINT(fmt, ...)         \
     do {                            \
         printf(fmt, ##__VA_ARGS__); \
-    } while (0)
-
-#define ACL_CHECK_RET(ret)                                                    \
-    do {                                                                      \
-        auto _r = (ret);                                                      \
-        if (_r != ACL_SUCCESS) {                                              \
-            LOG_PRINT("ACL error %d at %s:%d\n", _r, __FILE__, __LINE__);     \
-            return -1;                                                        \
-        }                                                                     \
     } while (0)
 
 using namespace Catlass;
@@ -115,7 +124,8 @@ static void FillRandomFp16(std::vector<fp16_t>& data, float low, float high)
 }
 
 // ============================================================
-// 性能统计：只计时 aclnnConv2dSilu（含 synchronize）
+// 性能统计：每次执行前都调用 GetWorkspaceSize，
+// 但计时只覆盖 aclnnConv2dSilu + synchronize
 // ============================================================
 static int RunPerfAclnnConv2dSilu(
     const Conv2dParams& p,
@@ -158,7 +168,6 @@ static int RunPerfAclnnConv2dSilu(
     ret = CreateAclTensor(hostBias, biasShape, &bDev, ACL_FLOAT16, &bTensor, ACL_FORMAT_ND);
     CHECK_RET(ret == 0, return ret);
 
-    size_t ySize = static_cast<size_t>(GetShapeSize(yShape)) * sizeof(fp16_t);
     std::vector<fp16_t> hostOutput(static_cast<size_t>(GetShapeSize(yShape)), FloatToFp16(0.0f));
     ret = CreateAclTensor(hostOutput, yShape, &yDev, ACL_FLOAT16, &yTensor, ACL_FORMAT_NC1HWC0);
     CHECK_RET(ret == 0, return ret);
@@ -174,15 +183,14 @@ static int RunPerfAclnnConv2dSilu(
     aclIntArray* padArr = aclCreateIntArray(pads.data(), pads.size());
     aclIntArray* dilationArr = aclCreateIntArray(dilations.data(), dilations.size());
 
-    // 第一段：GetWorkspaceSize（只做一次，不计入循环计时）
+    // 先做一次 GetWorkspaceSize，用于确定 workspace 大小并申请（后续循环复用这块内存）
     uint64_t workspaceSize = 0;
     aclOpExecutor* executor = nullptr;
     ret = aclnnConv2dSiluGetWorkspaceSize(
         xTensor, wTensor, bTensor, strideArr, padArr, dilationArr, groups, yTensor, &workspaceSize, &executor);
     if (ret != ACL_SUCCESS) {
         const char* errMsg = aclGetRecentErrMsg();
-        LOG_PRINT("aclnnConv2dSiluGetWorkspaceSize failed. ret=%d msg=%s\n", ret, errMsg ? errMsg : "");
-        // cleanup...
+        LOG_PRINT("aclnnConv2dSiluGetWorkspaceSize (probe) failed. ret=%d msg=%s\n", ret, errMsg ? errMsg : "");
         aclDestroyTensor(xTensor);
         aclDestroyTensor(wTensor);
         aclDestroyTensor(bTensor);
@@ -200,16 +208,51 @@ static int RunPerfAclnnConv2dSilu(
     void* workspaceAddr = nullptr;
     if (workspaceSize > 0) {
         ret = aclrtMalloc(&workspaceAddr, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-        CHECK_RET(ret == ACL_SUCCESS, return ret);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("workspace malloc failed\n"); return ret);
     }
+
+    // 辅助 lambda：执行一次完整的两段式调用
+    // 返回 0 成功；计时结果通过 outMs 传出（仅当 needTiming==true）
+    auto runOne = [&](bool needTiming, double* outMs) -> int {
+        uint64_t wsSize = 0;
+        aclOpExecutor* exe = nullptr;
+
+        // 1. 每次都必须重新 GetWorkspaceSize（不计入计时）
+        int r = aclnnConv2dSiluGetWorkspaceSize(
+            xTensor, wTensor, bTensor, strideArr, padArr, dilationArr, groups, yTensor, &wsSize, &exe);
+        if (r != ACL_SUCCESS) {
+            const char* errMsg = aclGetRecentErrMsg();
+            LOG_PRINT("aclnnConv2dSiluGetWorkspaceSize failed. ret=%d msg=%s\n", r, errMsg ? errMsg : "");
+            return r;
+        }
+
+        // 2. 只对 execute + synchronize 计时
+        auto t0 = std::chrono::steady_clock::now();
+
+        r = aclnnConv2dSilu(workspaceAddr, wsSize, exe, stream);
+        if (r != ACL_SUCCESS) {
+            LOG_PRINT("aclnnConv2dSilu failed. ERROR: %d\n", r);
+            return r;
+        }
+        r = aclrtSynchronizeStream(stream);
+        if (r != ACL_SUCCESS) {
+            LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", r);
+            return r;
+        }
+
+        auto t1 = std::chrono::steady_clock::now();
+
+        if (needTiming && outMs) {
+            *outMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        }
+        return 0;
+    };
 
     // -------------------- 预热 --------------------
     LOG_PRINT("Warmup: %d iters ...\n", warmupIters);
     for (int i = 0; i < warmupIters; ++i) {
-        ret = aclnnConv2dSilu(workspaceAddr, workspaceSize, executor, stream);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnConv2dSilu (warmup) failed. ERROR: %d\n", ret); return ret);
-        ret = aclrtSynchronizeStream(stream);
-        CHECK_RET(ret == ACL_SUCCESS, return ret);
+        ret = runOne(false, nullptr);
+        CHECK_RET(ret == 0, return ret);
     }
 
     // -------------------- 正式计时 --------------------
@@ -218,15 +261,9 @@ static int RunPerfAclnnConv2dSilu(
     timesMs.reserve(testIters);
 
     for (int i = 0; i < testIters; ++i) {
-        auto t0 = std::chrono::steady_clock::now();
-
-        ret = aclnnConv2dSilu(workspaceAddr, workspaceSize, executor, stream);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclnnConv2dSilu failed. ERROR: %d\n", ret); return ret);
-        ret = aclrtSynchronizeStream(stream);
-        CHECK_RET(ret == ACL_SUCCESS, return ret);
-
-        auto t1 = std::chrono::steady_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double ms = 0.0;
+        ret = runOne(true, &ms);
+        CHECK_RET(ret == 0, return ret);
         timesMs.push_back(ms);
     }
 
@@ -236,7 +273,6 @@ static int RunPerfAclnnConv2dSilu(
     double minT = *std::min_element(timesMs.begin(), timesMs.end());
     double maxT = *std::max_element(timesMs.begin(), timesMs.end());
 
-    // 简单标准差
     double var = 0.0;
     for (double t : timesMs) {
         var += (t - avg) * (t - avg);
@@ -320,26 +356,9 @@ int main()
     ret = aclrtCreateStream(&stream);
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", ret); return ret);
 
-    // 与 validation 相同的典型 case，可按需增删
-    // 示例：N=2, Cin=112, H=33, W=43, Cout=80, K=3x3, pad=1, stride=1, dil=1
     {
-        // 默认参数与 example 保持一致
-    // uint32_t dataSizes[5] = {2, 33, 43, 112, 80}; // {batch, hi, wi, cin, cout}
-    // uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
-    // uint8_t pads[4] = {2, 2, 2, 2};               // {padLeft, padRight, padTop, padBottom}
-    // uint8_t strides[2] = {1, 1};                  // {strideH, strideW}
-    // uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
-    // int32_t deviceId = 0;
-
-    uint32_t dataSizes[5] = {8, 640, 640, 3, 32}; // {batch, hi, wi, cin, cout}
-    uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
-    uint8_t pads[4] = {1, 1, 1, 1};               // {padLeft, padRight, padTop, padBottom}
-    uint8_t strides[2] = {2, 2};                  // {strideH, strideW}
-    uint8_t dilations[2] = {1, 1};                // {dilationH, dilationW}
-    int32_t deviceId = 0;
-
-    Conv2dParams problemParams =
-        Conv2dParams::MakeConv2dParams(dataSizes, filterSizes, pads, strides, dilations);
+        Conv2dParams problemParams =
+            Conv2dParams::MakeConv2dParams(dataSizes, filterSizes, pads, strides, dilations);
         ret = RunOneCasePerf(problemParams, stream);
         if (ret != 0) {
             LOG_PRINT("RunOneCasePerf failed\n");
