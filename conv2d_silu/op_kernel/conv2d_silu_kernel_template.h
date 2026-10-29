@@ -29,19 +29,30 @@ struct Conv2dSiluKernelTraits {
     using ElementOutput = ElementType;
 
     using ArchTag = Arch::AtlasA2;
-    static constexpr uint32_t L1A_STAGES = 2;
-    static constexpr uint32_t L1B_STAGES = 2;
-    static constexpr uint32_t L0A_STAGES = 2;
-    static constexpr uint32_t L0B_STAGES = 2;
+    // static constexpr uint32_t L1A_STAGES = 2;
+    // static constexpr uint32_t L1B_STAGES = 2;
+    // static constexpr uint32_t L0A_STAGES = 2;
+    // static constexpr uint32_t L0B_STAGES = 2;
+    // static constexpr uint32_t L0C_STAGES = 1;
+    // static constexpr bool ENABLE_UNIT_FLAG = false;
+
+    static constexpr uint32_t L1A_STAGES = 1;
+    static constexpr uint32_t L1B_STAGES = 1;
+    static constexpr uint32_t L0A_STAGES = 1;
+    static constexpr uint32_t L0B_STAGES = 1;
     static constexpr uint32_t L0C_STAGES = 1;
     static constexpr bool ENABLE_UNIT_FLAG = false;
 
     using DispatchPolicy =
         Conv::ConvPingpong<ArchTag, L1A_STAGES, L1B_STAGES, L0A_STAGES, L0B_STAGES, L0C_STAGES, ENABLE_UNIT_FLAG>;
 
-    using FmapL1TileShape = Catlass::Conv2dFmapL1Shape<4, 8, 8>;    // <Ho, Wo, Cin1_small>
-    using FilterL1TileShape = Catlass::Conv2dFilterL1Shape<96, 8>;  // <Cout, Cin1_big>
-    using L0TileShape = Catlass::Conv2dL0Shape<16, 96, 16>;         // <M, N, K>
+    // using FmapL1TileShape = Catlass::Conv2dFmapL1Shape<4, 8, 8>;    // <Ho, Wo, Cin1_small>
+    // using FilterL1TileShape = Catlass::Conv2dFilterL1Shape<96, 8>;  // <Cout, Cin1_big>
+    // using L0TileShape = Catlass::Conv2dL0Shape<16, 96, 16>;         // <M, N, K>
+
+    using FmapL1TileShape = Catlass::Conv2dFmapL1Shape<14, 16, 1>;    // <Ho, Wo, Cin1_small>
+    using FilterL1TileShape = Catlass::Conv2dFilterL1Shape<32, 1>;  // <Cout, Cin1_big>
+    using L0TileShape = Catlass::Conv2dL0Shape<16, 32, 16>;         // <M, N, K>
 
     using BlockConv2d = Conv::Block::BlockConv2dTla<
         DispatchPolicy, FmapL1TileShape, FilterL1TileShape, L0TileShape,
