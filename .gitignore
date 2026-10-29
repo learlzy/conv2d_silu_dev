@@ -1,4 +1,5 @@
 conv2d_silu/build_out/
-conv2d_silu/test/test_conv2d_silu_aclnn
+conv2d_silu/test/performance/build/
+conv2d_silu/test/validation/build/
 fusion_pass_cpp/build/
 test/build/
