@@ -3,8 +3,8 @@ import acl
 import numpy as np
 
 # ===================== 配置区 =====================
-OM_PATH_1 = "/mnt/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph.om"
-OM_PATH_2 = "/mnt/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph.om"
+OM_PATH_1 = "/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_base.om"
+OM_PATH_2 = "/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_base.om"
 DEVICE_ID = 0
 INPUT_SHAPE = (8, 3, 640, 640)
 INPUT_DTYPE = np.float32
@@ -12,6 +12,8 @@ SEED = 42
 # 精度阈值
 THRESH_ABS = 1e-5
 THRESH_REL = 1e-5
+# dump配置文件路径
+DUMP_CONFIG_PATH = "./acl.json"
 # =================================================
 
 ACL_MEMCPY_HOST_TO_DEVICE = 1
@@ -193,7 +195,7 @@ def compare_array(a: np.ndarray, b: np.ndarray, out_idx: int):
 
 if __name__ == "__main__":
     # ========== 全局只初始化一次acl ==========
-    ret = acl.init()
+    ret = acl.init(DUMP_CONFIG_PATH)
     check_ret(ret, "global acl.init failed")
     print("==== 全局ACL初始化完成 ====\n")
 

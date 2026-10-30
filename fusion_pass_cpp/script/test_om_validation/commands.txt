@@ -1,0 +1,18 @@
+# 修改acl.json中的捕捉信息
+- model_name
+- layer
+- dump_mode
+- dump_data
+...
+
+# 把om的中间节点输入输出dump到文件
+python3 ./test_om_validtion.py
+
+# 利用cann自带的msaccucmp.py把dump数据转换成npy格式
+export DUMP_DATA_DIR=/workspace/conv2d_silu_dev/test/build/20261030085435/0/yolov8s_subgraph_base/1/0
+python3 ${ASCEND_HOME_PATH}/toolkit/tools/operator_cmp/compare/msaccucmp.py convert \
+    -d ${DUMP_DATA_DIR} \
+    -out ${DUMP_DATA_DIR}
+
+# 读取npy数据 (可以自由修改这个脚本来查看更多信息，比如查看某个坐标的值)
+python3 ./read_dump_npy.py

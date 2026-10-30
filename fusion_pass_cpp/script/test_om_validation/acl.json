@@ -1,0 +1,20 @@
+{                                                                                            
+	"dump":{
+		"dump_list":[                                                                        
+			{	"model_name":"yolov8s_subgraph_base",
+                "layer":[
+                      "/model.0/conv/Conv"
+                ]
+			},
+			{	"model_name":"yolov8s_subgraph_fuse",
+                "layer":[
+                      "/model.0/conv/Conv"
+                ]
+			}
+		],
+		"dump_path":"/workspace/conv2d_silu_dev/test/build",
+        "dump_mode":"all",
+		"dump_op_switch":"off",
+        "dump_data":"tensor"
+	}                                                                                        
+}
