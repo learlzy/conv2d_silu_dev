@@ -3,17 +3,20 @@ import acl
 import numpy as np
 
 # ===================== 配置区 =====================
-OM_PATH_1 = "/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_base.om"
-OM_PATH_2 = "/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_base.om"
+OM_PATH_1 = "/mnt/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_base.om"
+OM_PATH_2 = "/mnt/workspace/conv2d_silu_dev/test/build/yolov8s_subgraph_fuse.om"
 DEVICE_ID = 0
-INPUT_SHAPE = (8, 3, 640, 640)
+INPUT_SHAPE = (1, 3, 5, 5)
 INPUT_DTYPE = np.float32
 SEED = 42
+RANDOM_INPUT = False  # True: 随机输入
+INPUT_VALUE = 1.0  # 当 RANDOM_INPUT=False 时，输入全为该值
 # 精度阈值
 THRESH_ABS = 1e-5
 THRESH_REL = 1e-5
 # dump配置文件路径
 DUMP_CONFIG_PATH = "./acl.json"
+DUMP_FLAG = True  # True: dump，False: 不dump
 # =================================================
 
 ACL_MEMCPY_HOST_TO_DEVICE = 1
@@ -195,14 +198,20 @@ def compare_array(a: np.ndarray, b: np.ndarray, out_idx: int):
 
 if __name__ == "__main__":
     # ========== 全局只初始化一次acl ==========
-    ret = acl.init(DUMP_CONFIG_PATH)
+    if DUMP_FLAG:
+        ret = acl.init(DUMP_CONFIG_PATH)
+    else:
+        ret = acl.init()
     check_ret(ret, "global acl.init failed")
     print("==== 全局ACL初始化完成 ====\n")
 
     # 固定种子，保证输入完全一模一样
     np.random.seed(SEED)
-    input_tensor = np.random.rand(*INPUT_SHAPE).astype(INPUT_DTYPE)
-    print(f"生成共用输入: shape={input_tensor.shape}, dtype={input_tensor.dtype}, seed={SEED}\n")
+    if RANDOM_INPUT:
+        input_tensor = np.random.rand(*INPUT_SHAPE).astype(INPUT_DTYPE)
+    else:
+        input_tensor = np.full(INPUT_SHAPE, INPUT_VALUE, dtype=INPUT_DTYPE)
+    print(f"生成共用输入: shape={input_tensor.shape}, dtype={input_tensor.dtype}, random={RANDOM_INPUT}\n")
 
     runner1 = OmRunner(OM_PATH_1, DEVICE_ID)
     runner1.init()
