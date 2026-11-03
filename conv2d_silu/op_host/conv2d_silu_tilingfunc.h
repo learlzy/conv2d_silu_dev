@@ -1,3 +1,4 @@
+#include <cmath>
 #include "../op_kernel/conv2d_silu_tiling.h"
 #include "../op_kernel/conv2d_silu_tiling_key.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -58,16 +59,31 @@ ge::graphStatus TilingFunc(gert::TilingContext* context)
     const auto& xDims = xShape->GetStorageShape();
     const auto& fDims = filterShape->GetStorageShape();
 
-    // 输入约定 5-D {N, Cin1, H, W, C0}，filter 约定 5-D {Cin1, Kh, Kw, Cout, C0}
+    // 输入x约定 5-D {N, Cin1, H, W, C0}，filter 约定 5-D {Cin1, Kh, Kw, Cout, C0}
     uint32_t batch = static_cast<uint32_t>(xDims.GetDim(0));
     uint32_t cin1  = static_cast<uint32_t>(xDims.GetDim(1));
     uint32_t hi   = static_cast<uint32_t>(xDims.GetDim(2));
     uint32_t wi   = static_cast<uint32_t>(xDims.GetDim(3));
     uint32_t c0   = static_cast<uint32_t>(xDims.GetDim(4));
-    uint32_t cout = static_cast<uint32_t>(fDims.GetDim(3));
-    uint32_t kh   = static_cast<uint32_t>(fDims.GetDim(1));
-    uint32_t kw   = static_cast<uint32_t>(fDims.GetDim(2));
-    uint32_t cout1 = (cout + c0 - 1) / c0;
+    
+    uint32_t cout, kh, kw, cout1;
+    if (fDims.GetDimNum() == 5) {
+        // aclnn接口约定 filter 5-D {Cin1, Kh, Kw, Cout, C0}
+        cout  = static_cast<uint32_t>(fDims.GetDim(3));
+        kh    = static_cast<uint32_t>(fDims.GetDim(1));
+        kw    = static_cast<uint32_t>(fDims.GetDim(2));
+        cout1 = (cout + c0 - 1) / c0;
+    } else if (fDims.GetDimNum() == 4) {
+        // GE接口约定 filter 4-D {Cin1*kw*kh, Cout1, C0, C0}
+        cout1 = static_cast<uint32_t>(fDims.GetDim(1));
+        cout  = cout1 * c0;
+        uint32_t kwkh = static_cast<uint32_t>(fDims.GetDim(0)) / cin1;
+        kh = static_cast<uint32_t>(std::sqrt(static_cast<double>(kwkh)));
+        kw = kwkh / kh;
+    } else {
+        std::cerr << "Unsupported filter shape dimension: " << fDims.GetDimNum() << std::endl;
+        return ge::GRAPH_FAILED;
+    }
     uint32_t ho = (hi + padTop + padBottom - dilH * (kh - 1) - 1) / strideH + 1;
     uint32_t wo = (wi + padLeft + padRight - dilW * (kw - 1) - 1) / strideW + 1;
 
