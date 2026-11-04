@@ -3,12 +3,13 @@
 		"dump_list":[                                                                        
 			{	"model_name":"yolov8s_subgraph_base",
                 "layer":[
-                      "/model.0/conv/Conv"
+                      "/model.0/conv/Conv",
+					  "/model.0/act/Sigmoid/model.0/act/Mul"
                 ]
 			},
 			{	"model_name":"yolov8s_subgraph_fuse",
                 "layer":[
-                      "/model.0/conv/Conv"
+                      "Conv2dSilu_00"
                 ]
 			}
 		],
