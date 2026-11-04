@@ -1,1 +1,9 @@
-msprof op --output=build/ ./test_performance_conv2d_silu_aclnn
+# 设置环境变量：上板和仿真都要设置
+export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH}
+
+# 上板测试:收集性能数据
+msopprof --output=./build/npu ./test_performance_conv2d_silu_aclnn
+
+# 仿真测试:收集计算流水图
+msprof op simulator --soc-version=Ascend910B2 \
+--output=./build/simulator ./test_performance_conv2d_silu_aclnn
