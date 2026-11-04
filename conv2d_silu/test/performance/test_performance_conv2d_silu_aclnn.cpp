@@ -38,7 +38,7 @@
 // 可配置参数（在这里改）
 // ============================================================
 constexpr int WARMUP_ITERS = 0;   // 预热轮次
-constexpr int TEST_ITERS   = 2;   // 正式测试轮次
+constexpr int TEST_ITERS   = 1;   // 正式测试轮次
 
 // uint32_t dataSizes[5] = {2, 33, 43, 112, 80}; // {batch, hi, wi, cin, cout}
 // uint8_t filterSizes[2] = {3, 3};              // {kh, kw}
