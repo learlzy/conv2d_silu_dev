@@ -276,61 +276,322 @@ struct CopyGm2Ub<Arch::AtlasA2, Gemm::GemmType<Element, layout::NC1HWC0>> {
     CATLASS_DEVICE
     CopyGm2Ub() = default;
 
+    // CATLASS_DEVICE
+    // void operator()(
+    //     AscendC::LocalTensor<Element> const& dstTensor, AscendC::GlobalTensor<Element> const& srcTensor,
+    //     layout::RowMajor const& layoutDst, layout::NC1HWC0 const& layoutSrc, int64_t tileBaseOffset = 0,
+    //     uint32_t localStart = 0)
+    // {
+    //     uint32_t batch = layoutSrc.shape(0);
+    //     uint32_t c1 = layoutSrc.shape(1);
+    //     uint32_t h = layoutSrc.shape(2);
+    //     uint32_t w = layoutSrc.shape(3);
+    //     uint32_t c0 = layoutSrc.shape(4);
+
+    //     uint32_t totalElements = batch * c1 * h * w * c0;
+    //     uint32_t dstRows = layoutDst.shape(0);
+    //     uint32_t dstCols = layoutDst.shape(1);
+    //     uint32_t actualLen = dstRows * dstCols;
+
+    //     if (actualLen >= totalElements) {
+    //         actualLen = totalElements;
+    //     }
+
+    //     int64_t strideB = layoutSrc.stride(0);
+    //     int64_t strideC1 = layoutSrc.stride(1);
+    //     int64_t strideH = layoutSrc.stride(2);
+    //     int64_t strideW = layoutSrc.stride(3);
+    //     int64_t strideC0 = layoutSrc.stride(4);
+
+    //     int64_t localFlat = localStart;
+    //     uint32_t remainingElements = actualLen;
+    //     uint32_t dstIdx = 0;
+
+    //     while (remainingElements > 0) {
+    //         uint32_t chunkSize = (remainingElements > C0_SIZE) ? C0_SIZE : remainingElements;
+
+    //         uint32_t localC0 = localFlat % c0;
+    //         uint32_t remIdx = localFlat / c0;
+    //         uint32_t localW = remIdx % w;
+    //         remIdx /= w;
+    //         uint32_t localH = remIdx % h;
+    //         remIdx /= h;
+    //         uint32_t localC1 = remIdx % c1;
+    //         uint32_t localB = remIdx / c1;
+
+    //         int64_t gmOffset = tileBaseOffset + localB * strideB + localC1 * strideC1 + localH * strideH +
+    //                            localW * strideW + localC0 * strideC0;
+
+    //         AscendC::DataCopyExtParams copyParams(1, chunkSize * sizeof(Element), 0, 0, 0);
+    //         AscendC::DataCopyPadExtParams<Element> padParams(false, 0, 0, 0);
+    //         AscendC::DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], copyParams, padParams);
+
+    //         localFlat += chunkSize;
+    //         dstIdx += chunkSize;
+    //         remainingElements -= chunkSize;
+    //     }
+    // };
+
+    // CATLASS_DEVICE
+    // void operator()(
+    //     AscendC::LocalTensor<Element> const& dstTensor,  // UB 中的目标 buffer（ubC），我们要把数据连续写进去
+    //     AscendC::GlobalTensor<Element> const& srcTensor,  // GM 上的 workspace
+    //     layout::RowMajor const& layoutDst,  // 描述 UB 侧形状，通常是 RowMajor(ubRows, c0)
+    //     layout::NC1HWC0 const& layoutSrc, // shape 是当前 block 的局部大小，stride 是全局真实 stride
+    //     int64_t tileBaseOffset = 0,  // 当前 block 第一个元素在 GM 中的绝对偏移
+    //     uint32_t localStart = 0   // 本次要搬的数据在 block 内的线性起始下标
+    // ) {
+    //     using namespace AscendC;
+
+    //     uint32_t batch = layoutSrc.shape(0);  // 当前 block 的 batch（通常 1）
+    //     uint32_t c1    = layoutSrc.shape(1);  // 当前 block 的 Cout1
+    //     uint32_t h     = layoutSrc.shape(2);  // 当前 block 的实际 Ho
+    //     uint32_t w     = layoutSrc.shape(3);  // 当前 block 的实际 Wo
+    //     uint32_t c0    = layoutSrc.shape(4);  // 通常是 16
+
+    //     uint32_t totalElements = batch * c1 * h * w * c0; // 整个 block 的总元素数
+    //     uint32_t dstRows = layoutDst.shape(0);  // UB 行数 = CeilDiv(actualLen, c0)
+    //     uint32_t dstCols = layoutDst.shape(1);  // 通常 = c0
+    //     uint32_t actualLen = dstRows * dstCols; // 本次实际要搬的元素个数
+    //     if (actualLen > totalElements) {
+    //         actualLen = totalElements;
+    //     }
+
+    //     int64_t strideB  = layoutSrc.stride(0);  // batch 方向的全局步长
+    //     int64_t strideC1 = layoutSrc.stride(1);  // C1 方向的全局步长
+    //     int64_t strideH  = layoutSrc.stride(2);  // H 方向的全局(GM)步长
+    //     int64_t strideW  = layoutSrc.stride(3);  // W 方向的全局(GM)步长
+    //     int64_t strideC0 = layoutSrc.stride(4);  // 通常是 1
+
+    //     uint32_t elementsLeft = actualLen;
+    //     uint32_t dstIdx       = 0;              // 当前数据起点在 UB 物理空间 中的写入位置（连续递增）
+    //     uint32_t localFlat    = localStart;     // 当前数据起点在 block 逻辑空间 中的线性编号（用来还原坐标、计算 GM 地址）
+
+    //     while (elementsLeft > 0) {
+    //         // 1. 当前数据起点在block内的线性下标 → 当前数据起点在block内的 NC1HWC0 坐标
+    //         uint32_t localC0 = localFlat % c0;
+    //         uint32_t rem     = localFlat / c0;
+    //         uint32_t localW  = rem % w;   rem /= w;
+    //         uint32_t localH  = rem % h;   rem /= h;
+    //         uint32_t localC1 = rem % c1;
+    //         uint32_t localB  = rem / c1;
+
+    //         // 2. 计算当前数据起点在 GM 的地址
+    //         int64_t gmOffset = tileBaseOffset
+    //                          + localB  * strideB
+    //                          + localC1 * strideC1
+    //                          + localH  * strideH
+    //                          + localW  * strideW
+    //                          + localC0 * strideC0;
+
+    //         // 3. 处理非 C0 对齐的起始点（只可能出现在第一个 chunk）
+    //         if (localC0 != 0) {
+    //             uint32_t chunk = min(c0 - localC0, elementsLeft);
+    //             DataCopyExtParams p{1, static_cast<uint32_t>(chunk * sizeof(Element)), 0, 0, 0};
+    //             DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+    //             DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], p, pad);
+
+    //             localFlat    += chunk;
+    //             dstIdx       += chunk;
+    //             elementsLeft -= chunk;
+    //             continue;
+    //         }
+
+    //         // 4. 计算同一行内还能连续搬多少个完整的 C0
+    //         uint32_t maxContiguousW = w - localW;               // 当前 H 行内剩余的 W 数
+    //         uint32_t maxBlocksByLen = elementsLeft / c0;        // 剩余元素能支撑的块数
+    //         uint32_t blocks = min(maxContiguousW, maxBlocksByLen);  // 本次实际能一次搬的块数（取两者较小值，一块就是 c0 个元素）
+
+    //         if (blocks == 0) {
+    //             // 理论上不会走到这里，保护一下
+    //             break;
+    //         }
+
+    //         // 5. 一次搬 blocks 个连续的 C0（使用 srcStride）
+    //         DataCopyExtParams p;
+    //         p.blockCount = static_cast<uint16_t>(blocks);
+    //         p.blockLen   = static_cast<uint32_t>(c0 * sizeof(Element));
+    //         // srcStride：前一个块的尾 → 后一个块的头 的间隔（字节）
+    //         // 相邻 W 的间隔是 strideW，每个块本身占 c0 个元素，所以间隔是 (strideW - c0)
+    //         p.srcStride  = static_cast<uint32_t>((strideW - c0) * sizeof(Element));
+    //         p.dstStride  = 0;   // UB 侧连续存放
+    //         p.rsv        = 0;
+
+    //         DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+    //         DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], p, pad);
+
+    //         uint32_t moved = blocks * c0;
+    //         localFlat    += moved;
+    //         dstIdx       += moved;
+    //         elementsLeft -= moved;
+    //     }
+    // }
+
     CATLASS_DEVICE
     void operator()(
-        AscendC::LocalTensor<Element> const& dstTensor, AscendC::GlobalTensor<Element> const& srcTensor,
-        layout::RowMajor const& layoutDst, layout::NC1HWC0 const& layoutSrc, int64_t tileBaseOffset = 0,
+        AscendC::LocalTensor<Element> const& dstTensor,
+        AscendC::GlobalTensor<Element> const& srcTensor,
+        layout::RowMajor const& layoutDst,
+        layout::NC1HWC0 const& layoutSrc,
+        int64_t tileBaseOffset = 0,
         uint32_t localStart = 0)
     {
+        using namespace AscendC;
+
         uint32_t batch = layoutSrc.shape(0);
-        uint32_t c1 = layoutSrc.shape(1);
-        uint32_t h = layoutSrc.shape(2);
-        uint32_t w = layoutSrc.shape(3);
-        uint32_t c0 = layoutSrc.shape(4);
+        uint32_t c1    = layoutSrc.shape(1);
+        uint32_t h     = layoutSrc.shape(2);
+        uint32_t w     = layoutSrc.shape(3);
+        uint32_t c0    = layoutSrc.shape(4);
 
         uint32_t totalElements = batch * c1 * h * w * c0;
         uint32_t dstRows = layoutDst.shape(0);
         uint32_t dstCols = layoutDst.shape(1);
         uint32_t actualLen = dstRows * dstCols;
-
-        if (actualLen >= totalElements) {
+        if (actualLen > totalElements) {
             actualLen = totalElements;
         }
 
-        int64_t strideB = layoutSrc.stride(0);
+        int64_t strideB  = layoutSrc.stride(0);
         int64_t strideC1 = layoutSrc.stride(1);
-        int64_t strideH = layoutSrc.stride(2);
-        int64_t strideW = layoutSrc.stride(3);
+        int64_t strideH  = layoutSrc.stride(2);
+        int64_t strideW  = layoutSrc.stride(3);
         int64_t strideC0 = layoutSrc.stride(4);
 
-        int64_t localFlat = localStart;
-        uint32_t remainingElements = actualLen;
-        uint32_t dstIdx = 0;
+        uint32_t elementsLeft = actualLen;
+        uint32_t dstIdx       = 0;
+        uint32_t localFlat    = localStart;
 
-        while (remainingElements > 0) {
-            uint32_t chunkSize = (remainingElements > C0_SIZE) ? C0_SIZE : remainingElements;
+        // ============================================================
+        // 新增分支：actualLen 是完整行（w*c0）的整数倍时，按行搬运
+        // ============================================================
+        uint32_t rowElements = w * c0;   // 一行的元素个数
 
-            uint32_t localC0 = localFlat % c0;
-            uint32_t remIdx = localFlat / c0;
-            uint32_t localW = remIdx % w;
-            remIdx /= w;
-            uint32_t localH = remIdx % h;
-            remIdx /= h;
-            uint32_t localC1 = remIdx % c1;
-            uint32_t localB = remIdx / c1;
+        if (rowElements > 0 && 
+            (actualLen % rowElements == 0) && 
+            (localStart % rowElements == 0)) {
+            // 满足条件：从完整行边界开始，且长度是整行的倍数
+            // 此时可以按「行」为粒度，用 strideH 一次搬多行
 
-            int64_t gmOffset = tileBaseOffset + localB * strideB + localC1 * strideC1 + localH * strideH +
-                               localW * strideW + localC0 * strideC0;
+            while (elementsLeft > 0) {
+                // 还原当前坐标（此时 localC0 一定是 0，localW 一定是 0）
+                uint32_t rem     = localFlat / c0;
+                uint32_t localH  = (rem / w) % h;
+                uint32_t rem2    = rem / w;
+                uint32_t localC1 = rem2 % c1;
+                uint32_t localB  = rem2 / c1;
 
-            AscendC::DataCopyExtParams copyParams(1, chunkSize * sizeof(Element), 0, 0, 0);
-            AscendC::DataCopyPadExtParams<Element> padParams(false, 0, 0, 0);
-            AscendC::DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], copyParams, padParams);
+                int64_t gmOffset = tileBaseOffset
+                                 + localB  * strideB
+                                 + localC1 * strideC1
+                                 + localH  * strideH;
+                                 // localW=0, localC0=0，所以后两项为 0
 
-            localFlat += chunkSize;
-            dstIdx += chunkSize;
-            remainingElements -= chunkSize;
+                // 计算同一 C1 内还能连续搬多少完整行
+                uint32_t maxContiguousH = h - localH;
+                uint32_t maxRowsByLen   = elementsLeft / rowElements;
+                uint32_t rows = min(maxContiguousH, maxRowsByLen);
+
+                if (rows == 0) break;
+
+                // 一次搬 rows 行
+                // 每一行内部的 w 个 C0 是连续的吗？
+                // 在 NC1HWC0 中，同一 H 内的 W 方向：相邻 W 间隔是 strideW
+                // 如果 strideW == c0，则整行连续；否则整行内部仍有间隔。
+                // 这里我们再分两种情况：
+
+                if (strideW == c0) {
+                    // 整行在 GM 上完全连续，可以直接搬 rows 个大块
+                    DataCopyExtParams p;
+                    p.blockCount = static_cast<uint16_t>(rows);
+                    p.blockLen   = static_cast<uint32_t>(rowElements * sizeof(Element));
+                    p.srcStride  = static_cast<uint32_t>((strideH - rowElements) * sizeof(Element));
+                    p.dstStride  = 0;
+                    p.rsv        = 0;
+
+                    DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+                    DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], p, pad);
+                } else {
+                    // 整行内部 W 方向有间隔，需要用两层：外层按 H，内层按 W
+                    // 为了简单高效，这里对每一行再用 W 方向的 stride 搬运
+                    for (uint32_t r = 0; r < rows; ++r) {
+                        int64_t rowGmOffset = gmOffset + r * strideH;
+
+                        DataCopyExtParams p;
+                        p.blockCount = static_cast<uint16_t>(w);
+                        p.blockLen   = static_cast<uint32_t>(c0 * sizeof(Element));
+                        p.srcStride  = static_cast<uint32_t>((strideW - c0) * sizeof(Element));
+                        p.dstStride  = 0;
+                        p.rsv        = 0;
+
+                        DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+                        DataCopyPad(dstTensor[dstIdx + r * rowElements],
+                                    srcTensor[rowGmOffset], p, pad);
+                    }
+                }
+
+                uint32_t moved = rows * rowElements;
+                localFlat    += moved;
+                dstIdx       += moved;
+                elementsLeft -= moved;
+            }
+            return;   // 整行分支处理完毕，直接返回
         }
-    };
+
+        // ============================================================
+        // 原有通用分支：按 C0 粒度，尽量一次搬多个连续 W
+        // ============================================================
+        while (elementsLeft > 0) {
+            uint32_t localC0 = localFlat % c0;
+            uint32_t rem     = localFlat / c0;
+            uint32_t localW  = rem % w;   rem /= w;
+            uint32_t localH  = rem % h;   rem /= h;
+            uint32_t localC1 = rem % c1;
+            uint32_t localB  = rem / c1;
+
+            int64_t gmOffset = tileBaseOffset
+                             + localB  * strideB
+                             + localC1 * strideC1
+                             + localH  * strideH
+                             + localW  * strideW
+                             + localC0 * strideC0;
+
+            // 非 C0 对齐的起始点
+            if (localC0 != 0) {
+                uint32_t chunk = min(c0 - localC0, elementsLeft);
+                DataCopyExtParams p{1, static_cast<uint32_t>(chunk * sizeof(Element)), 0, 0, 0};
+                DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+                DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], p, pad);
+
+                localFlat    += chunk;
+                dstIdx       += chunk;
+                elementsLeft -= chunk;
+                continue;
+            }
+
+            // 同一行内连续的 W
+            uint32_t maxContiguousW = w - localW;
+            uint32_t maxBlocksByLen = elementsLeft / c0;
+            uint32_t blocks = min(maxContiguousW, maxBlocksByLen);
+
+            if (blocks == 0) break;
+
+            DataCopyExtParams p;
+            p.blockCount = static_cast<uint16_t>(blocks);
+            p.blockLen   = static_cast<uint32_t>(c0 * sizeof(Element));
+            p.srcStride  = static_cast<uint32_t>((strideW - c0) * sizeof(Element));
+            p.dstStride  = 0;
+            p.rsv        = 0;
+
+            DataCopyPadExtParams<Element> pad{false, 0, 0, 0};
+            DataCopyPad(dstTensor[dstIdx], srcTensor[gmOffset], p, pad);
+
+            uint32_t moved = blocks * c0;
+            localFlat    += moved;
+            dstIdx       += moved;
+            elementsLeft -= moved;
+        }
+    }
 };
 
 #if (defined(CATLASS_ARCH) && CATLASS_ARCH == 3510) || (defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510)

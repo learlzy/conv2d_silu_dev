@@ -66,7 +66,7 @@ struct Conv2dSiluKernelTraits {
     using ComputeType = Gemm::GemmType<float, layout::NC1HWC0>;
     using FinalOutputType = Gemm::GemmType<ElementOutput, layout::NC1HWC0>;
 
-    using TileEpilogue = Tile::TileElemWiseSilu<ArchTag, ComputeType, 256>;
+    using TileEpilogue = Tile::TileElemWiseSilu<ArchTag, ComputeType, 1024>;
     using TileCopy = Tile::TileCopy<ArchTag, StorageType, FinalOutputType>;
 
     using BlockEpilogue = Block::BlockEpilogue<
