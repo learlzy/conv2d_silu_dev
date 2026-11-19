@@ -21,6 +21,9 @@ npu_op_kernel_options(ascendc_kernels ALL OPTIONS -I ${CATLASS_INCLUDE_PATH})
 - 安装算子：
 ./build_out/custom_opp*.run
 
+- 卸载算子
+sudo rm -rf ${ASCEND_HOME_PATH}/opp/vendors/customize
+
 - 设置环境变量：
 export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/opp/vendors/customize/op_api/lib/:${LD_LIBRARY_PATH}
 
